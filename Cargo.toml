@@ -1,0 +1,90 @@
+[package]
+name = "mandrel"
+version = "0.1.0"
+edition = "2024"
+description = "Rust-first RISC-V GPGPU stack co-design workspace"
+publish = false
+
+[workspace]
+members = [
+    "crates/compiler",
+    "crates/core",
+    "crates/device",
+    "crates/ggml-adapter",
+    "crates/kernel-ir",
+    "crates/kernels",
+    "crates/model-ir",
+    "crates/profiler",
+    "crates/runtime",
+    "crates/schedule",
+    "crates/vortex-backend",
+    "crates/xtask",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+rust-version = "1.85"
+
+[workspace.dependencies]
+mandrel-compiler = { path = "crates/compiler", default-features = false }
+mandrel-core = { path = "crates/core", default-features = false }
+mandrel-device = { path = "crates/device", default-features = false }
+mandrel-ggml-adapter = { path = "crates/ggml-adapter", default-features = false }
+mandrel-kernel-ir = { path = "crates/kernel-ir", default-features = false }
+mandrel-kernels = { path = "crates/kernels", default-features = false }
+mandrel-model-ir = { path = "crates/model-ir", default-features = false }
+mandrel-profiler = { path = "crates/profiler", default-features = false }
+mandrel-runtime = { path = "crates/runtime", default-features = false }
+mandrel-schedule = { path = "crates/schedule", default-features = false }
+mandrel-vortex-backend = { path = "crates/vortex-backend" }
+
+[workspace.lints.rust]
+rust_2018_idioms = { level = "deny", priority = -1 }
+unsafe_op_in_unsafe_fn = "deny"
+unused_lifetimes = "deny"
+unused_must_use = "deny"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+expect_used = "deny"
+missing_safety_doc = "deny"
+todo = "deny"
+undocumented_unsafe_blocks = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+[profile.dev]
+overflow-checks = true
+
+[profile.release]
+codegen-units = 1
+debug = "line-tables-only"
+lto = "thin"
+strip = "symbols"
+
+[profile.ci]
+inherits = "dev"
+debug = "full"
+incremental = false
+
+[dependencies]
+mandrel-compiler = { workspace = true }
+mandrel-core = { workspace = true }
+mandrel-device = { workspace = true }
+mandrel-ggml-adapter = { workspace = true }
+mandrel-kernel-ir = { workspace = true }
+mandrel-kernels = { workspace = true }
+mandrel-model-ir = { workspace = true }
+mandrel-profiler = { workspace = true }
+mandrel-runtime = { workspace = true }
+mandrel-schedule = { workspace = true }
+mandrel-vortex-backend = { workspace = true }
+
+[lints]
+workspace = true

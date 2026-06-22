@@ -1,0 +1,16 @@
+# Miri is only distributed for nightly toolchains, so this workspace pins nightly
+# as the default toolchain instead of mixing stable for development and nightly
+# for UB checks. Move this date forward intentionally after CI/local validation.
+[toolchain]
+channel = "nightly-2025-03-01"
+profile = "minimal"
+components = [
+    "clippy",
+    "llvm-tools-preview",
+    "miri",
+    "rust-src",
+    "rustfmt",
+]
+targets = [
+    "riscv64gc-unknown-none-elf",
+]

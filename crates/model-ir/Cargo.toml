@@ -1,0 +1,21 @@
+[package]
+name = "mandrel-model-ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["std"]
+std = ["mandrel-core/std"]
+
+[dependencies]
+mandrel-core = { workspace = true }
+
+[lib]
+name = "mandrel_model_ir"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

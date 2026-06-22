@@ -1,0 +1,27 @@
+[package]
+name = "mandrel-profiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["std"]
+std = [
+    "mandrel-core/std",
+    "mandrel-model-ir/std",
+    "mandrel-schedule/std",
+]
+
+[dependencies]
+mandrel-core = { workspace = true }
+mandrel-model-ir = { workspace = true }
+mandrel-schedule = { workspace = true }
+
+[lib]
+name = "mandrel_profiler"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

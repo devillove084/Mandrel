@@ -1,0 +1,24 @@
+[package]
+name = "mandrel-vortex-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+genco = "0.17.10"
+mandrel-compiler = { workspace = true }
+mandrel-device = { workspace = true }
+mandrel-kernel-ir = { workspace = true }
+mandrel-model-ir = { workspace = true }
+mandrel-profiler = { workspace = true }
+mandrel-schedule = { workspace = true }
+
+[lib]
+name = "mandrel_vortex_backend"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[lints]
+workspace = true

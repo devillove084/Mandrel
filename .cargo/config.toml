@@ -1,0 +1,22 @@
+[alias]
+xtask = "run --package xtask --"
+vortex-fetch = "run --package xtask -- vortex-fetch"
+vortex-system-tools = "run --package xtask -- vortex-system-tools"
+vortex-toolchain-source = "run --package xtask -- vortex-toolchain-source"
+vortex-install = "run --package xtask -- vortex-install"
+vortex-env = "run --package xtask -- vortex-env"
+vortex-status = "run --package xtask -- vortex-status"
+vortex-plan-matmul = "run --package xtask -- vortex-plan-matmul"
+vortex-run-vecadd = "run --package xtask -- vortex-run-vecadd"
+vortex-run-matmul = "run --package xtask -- vortex-run-matmul"
+vortex-run-matmul-tiled = "run --package xtask -- vortex-run-matmul-tiled"
+check-all = "check --workspace --all-targets --all-features"
+clippy-all = "clippy --workspace --all-targets --all-features -- -D warnings"
+deny-check = "deny check"
+fmt-check = "fmt --all -- --check"
+miri-test = "miri test --package mandrel-compiler --package mandrel-core --package mandrel-device --package mandrel-ggml-adapter --package mandrel-kernel-ir --package mandrel-kernels --package mandrel-model-ir --package mandrel-profiler --package mandrel-runtime --package mandrel-schedule"
+no-std-check = "check --package mandrel-compiler --package mandrel-core --package mandrel-device --package mandrel-ggml-adapter --package mandrel-kernel-ir --package mandrel-kernels --package mandrel-model-ir --package mandrel-profiler --package mandrel-runtime --package mandrel-schedule --lib --no-default-features"
+test-all = "test --workspace --all-targets --all-features"
+
+[env]
+MIRIFLAGS = "-Zmiri-strict-provenance -Zmiri-symbolic-alignment-check"

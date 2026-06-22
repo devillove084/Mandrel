@@ -1,0 +1,31 @@
+[package]
+name = "mandrel-compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["std"]
+std = [
+    "mandrel-core/std",
+    "mandrel-kernel-ir/std",
+    "mandrel-model-ir/std",
+    "mandrel-profiler/std",
+    "mandrel-schedule/std",
+]
+
+[dependencies]
+mandrel-core = { workspace = true }
+mandrel-kernel-ir = { workspace = true }
+mandrel-model-ir = { workspace = true }
+mandrel-profiler = { workspace = true }
+mandrel-schedule = { workspace = true }
+
+[lib]
+name = "mandrel_compiler"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
