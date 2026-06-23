@@ -1,10 +1,14 @@
-use crate::codegen::llvm_ir::{LlvmIrModule, emit_private_metadata_string};
+#![allow(dead_code, unused_imports)]
+
 use crate::codegen::vortex_ir::VortexCtaCsr;
 
 const TARGET_DATALAYOUT: &str = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128";
 const TARGET_TRIPLE: &str = "riscv64-unknown-unknown-elf";
-const VORTEX_UNIFORM_INTRINSIC: &str = "@llvm.riscv.vx.uniform.i32.i32";
 const RISCV_CUSTOM0: u32 = 0x0B;
+
+#[path = "device_ir_mlir.rs"]
+mod device_ir_mlir;
+pub(crate) use device_ir_mlir::render_vortex_device_module_mlir;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VortexDeviceModule {
@@ -116,6 +120,7 @@ pub enum LlvmType {
     I8,
     I32,
     I64,
+    F32,
     Ptr,
     Struct(String),
 }
@@ -123,17 +128,6 @@ pub enum LlvmType {
 impl LlvmType {
     pub fn struct_named(name: impl Into<String>) -> Self {
         Self::Struct(name.into())
-    }
-
-    fn render(&self) -> String {
-        match self {
-            Self::I1 => "i1".to_owned(),
-            Self::I8 => "i8".to_owned(),
-            Self::I32 => "i32".to_owned(),
-            Self::I64 => "i64".to_owned(),
-            Self::Ptr => "ptr".to_owned(),
-            Self::Struct(name) => format!("%struct.{name}"),
-        }
     }
 }
 
@@ -185,12 +179,39 @@ pub enum VortexOp {
         rhs: String,
         overflow: IntegerOverflowSemantics,
     },
+    FloatBinary {
+        result: String,
+        op: VortexFloatBinaryOp,
+        ty: LlvmType,
+        lhs: String,
+        rhs: String,
+    },
     Icmp {
         result: String,
         predicate: IcmpPredicate,
         ty: LlvmType,
         lhs: String,
         rhs: String,
+    },
+    Fcmp {
+        result: String,
+        predicate: FcmpPredicate,
+        ty: LlvmType,
+        lhs: String,
+        rhs: String,
+    },
+    Select {
+        result: String,
+        cond: String,
+        ty: LlvmType,
+        true_value: String,
+        false_value: String,
+    },
+    FloatUnaryIntrinsic {
+        result: String,
+        intrinsic: VortexFloatUnaryIntrinsic,
+        ty: LlvmType,
+        value: String,
     },
     Phi {
         result: String,
@@ -341,6 +362,22 @@ impl VortexOp {
         }
     }
 
+    pub fn float_binary(
+        result: impl Into<String>,
+        op: VortexFloatBinaryOp,
+        ty: LlvmType,
+        lhs: impl Into<String>,
+        rhs: impl Into<String>,
+    ) -> Self {
+        Self::FloatBinary {
+            result: result.into(),
+            op,
+            ty,
+            lhs: lhs.into(),
+            rhs: rhs.into(),
+        }
+    }
+
     pub fn icmp(
         result: impl Into<String>,
         predicate: IcmpPredicate,
@@ -354,6 +391,52 @@ impl VortexOp {
             ty,
             lhs: lhs.into(),
             rhs: rhs.into(),
+        }
+    }
+
+    pub fn fcmp(
+        result: impl Into<String>,
+        predicate: FcmpPredicate,
+        ty: LlvmType,
+        lhs: impl Into<String>,
+        rhs: impl Into<String>,
+    ) -> Self {
+        Self::Fcmp {
+            result: result.into(),
+            predicate,
+            ty,
+            lhs: lhs.into(),
+            rhs: rhs.into(),
+        }
+    }
+
+    pub fn select(
+        result: impl Into<String>,
+        cond: impl Into<String>,
+        ty: LlvmType,
+        true_value: impl Into<String>,
+        false_value: impl Into<String>,
+    ) -> Self {
+        Self::Select {
+            result: result.into(),
+            cond: cond.into(),
+            ty,
+            true_value: true_value.into(),
+            false_value: false_value.into(),
+        }
+    }
+
+    pub fn float_unary_intrinsic(
+        result: impl Into<String>,
+        intrinsic: VortexFloatUnaryIntrinsic,
+        ty: LlvmType,
+        value: impl Into<String>,
+    ) -> Self {
+        Self::FloatUnaryIntrinsic {
+            result: result.into(),
+            intrinsic,
+            ty,
+            value: value.into(),
         }
     }
 
@@ -424,18 +507,41 @@ impl VortexBinaryOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VortexFloatBinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl VortexFloatBinaryOp {
+    const fn render(self) -> &'static str {
+        match self {
+            Self::Add => "fadd",
+            Self::Sub => "fsub",
+            Self::Mul => "fmul",
+            Self::Div => "fdiv",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VortexFloatUnaryIntrinsic {
+    Exp,
+}
+
+impl VortexFloatUnaryIntrinsic {
+    const fn render(self) -> &'static str {
+        match self {
+            Self::Exp => "llvm.intr.exp",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerOverflowSemantics {
     None,
     Nsw,
-}
-
-impl IntegerOverflowSemantics {
-    const fn render(self) -> &'static str {
-        match self {
-            Self::None => "",
-            Self::Nsw => " nsw",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -449,6 +555,21 @@ impl IcmpPredicate {
         match self {
             Self::Ult => "ult",
             Self::Uge => "uge",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FcmpPredicate {
+    Ogt,
+    Olt,
+}
+
+impl FcmpPredicate {
+    const fn render(self) -> &'static str {
+        match self {
+            Self::Ogt => "ogt",
+            Self::Olt => "olt",
         }
     }
 }
@@ -472,6 +593,9 @@ impl PhiIncoming {
 pub enum CastKind {
     Sext,
     Zext,
+    Trunc,
+    Sitofp,
+    Fptosi,
 }
 
 impl CastKind {
@@ -479,6 +603,9 @@ impl CastKind {
         match self {
             Self::Sext => "sext",
             Self::Zext => "zext",
+            Self::Trunc => "trunc",
+            Self::Sitofp => "sitofp",
+            Self::Fptosi => "fptosi",
         }
     }
 }
@@ -516,390 +643,52 @@ impl VortexTerminator {
     }
 }
 
-pub(crate) fn render_vortex_device_module_llvm_ir(module: &VortexDeviceModule) -> String {
-    let mut ir = LlvmIrModule::new();
-
-    emit_header(&mut ir, module);
-    emit_structs(&mut ir, module);
-    emit_kernel_metadata(&mut ir, module);
-    ir.blank_line();
-    emit_kernels(&mut ir, module);
-    ir.blank_line();
-    emit_declarations_and_attributes(&mut ir);
-    ir.blank_line();
-    emit_module_flags(&mut ir);
-
-    ir.finish()
-}
-
-fn emit_header(ir: &mut LlvmIrModule, module: &VortexDeviceModule) {
-    ir.push_line(format!("; ModuleID = '{}'", module.module_id));
-    ir.push_line(format!("source_filename = \"{}\"", module.source_filename));
-    ir.push_line(format!("target datalayout = \"{TARGET_DATALAYOUT}\""));
-    ir.push_line(format!("target triple = \"{TARGET_TRIPLE}\""));
-    ir.blank_line();
-}
-
-fn emit_structs(ir: &mut LlvmIrModule, module: &VortexDeviceModule) {
-    for struct_type in &module.structs {
-        let fields = render_type_list(&struct_type.fields);
-        ir.push_line(format!(
-            "%struct.{} = type {{ {fields} }}",
-            struct_type.name
-        ));
-    }
-    if !module.structs.is_empty() {
-        ir.blank_line();
-    }
-}
-
-fn emit_kernel_metadata(ir: &mut LlvmIrModule, module: &VortexDeviceModule) {
-    if module.kernels.is_empty() {
-        return;
-    }
-
-    emit_private_metadata_string(ir, ".mandrel.vortex.kernel", "vortex.kernel");
-    emit_private_metadata_string(ir, ".mandrel.vortex.source", &module.source_name);
-    emit_global_annotations(ir, module);
-    emit_used_kernel_list(ir, "@llvm.used", module);
-    emit_used_kernel_list(ir, "@llvm.compiler.used", module);
-}
-
-fn emit_global_annotations(ir: &mut LlvmIrModule, module: &VortexDeviceModule) {
-    let count = module.kernels.len();
-    let mut line = format!(
-        "@llvm.global.annotations = appending global [{count} x {{ ptr, ptr, ptr, i32, ptr }}] ["
-    );
-    for (index, kernel) in module.kernels.iter().enumerate() {
-        if index != 0 {
-            line.push_str(", ");
-        }
-        line.push_str(&format!(
-            "{{ ptr, ptr, ptr, i32, ptr }} {{ ptr @{}, ptr @.mandrel.vortex.kernel, ptr @.mandrel.vortex.source, i32 1, ptr null }}",
-            kernel.name
-        ));
-    }
-    line.push_str("], section \"llvm.metadata\"");
-    ir.push_line(line);
-}
-
-fn emit_used_kernel_list(ir: &mut LlvmIrModule, symbol: &str, module: &VortexDeviceModule) {
-    let count = module.kernels.len();
-    let mut line = format!("{symbol} = appending global [{count} x ptr] [");
-    for (index, kernel) in module.kernels.iter().enumerate() {
-        if index != 0 {
-            line.push_str(", ");
-        }
-        line.push_str(&format!("ptr @{}", kernel.name));
-    }
-    line.push_str("], section \"llvm.metadata\"");
-    ir.push_line(line);
-}
-
-fn emit_kernels(ir: &mut LlvmIrModule, module: &VortexDeviceModule) {
-    for kernel in &module.kernels {
-        emit_kernel(ir, kernel);
-        ir.blank_line();
-    }
-}
-
-fn emit_kernel(ir: &mut LlvmIrModule, kernel: &VortexKernelFunction) {
-    ir.push_line(format!(
-        "define dso_local void @{}({} %{}) #0 {{",
-        kernel.name,
-        kernel.param_type.render(),
-        kernel.param_name
-    ));
-    for block in &kernel.blocks {
-        emit_block(ir, block);
-    }
-    ir.push_line("}");
-}
-
-fn emit_block(ir: &mut LlvmIrModule, block: &VortexBlock) {
-    ir.push_line(format!("{}:", block.label));
-    for op in &block.ops {
-        emit_op(ir, op);
-    }
-    emit_terminator(ir, &block.terminator);
-    ir.blank_line();
-}
-
-fn emit_op(ir: &mut LlvmIrModule, op: &VortexOp) {
-    match op {
-        VortexOp::StructFieldPtr {
-            result,
-            struct_type,
-            base,
-            field,
-        } => ir.push_line(format!(
-            "  {result} = getelementptr inbounds %struct.{struct_type}, ptr {base}, i32 0, i32 {field}"
-        )),
-        VortexOp::Load {
-            result,
-            ty,
-            ptr,
-            align,
-        } => ir.push_line(format!(
-            "  {result} = load {}, ptr {ptr}, align {align}",
-            ty.render()
-        )),
-        VortexOp::Store {
-            ty,
-            value,
-            ptr,
-            align,
-        } => ir.push_line(format!(
-            "  store {} {value}, ptr {ptr}, align {align}",
-            ty.render()
-        )),
-        VortexOp::IntToPtr {
-            result,
-            int_ty,
-            value,
-        } => ir.push_line(format!(
-            "  {result} = inttoptr {} {value} to ptr",
-            int_ty.render()
-        )),
-        VortexOp::CtaCsrI32 {
-            raw64,
-            raw32,
-            result,
-            csr,
-            uniform,
-        } => emit_cta_csr_i32(ir, raw64, raw32.as_deref(), result, *csr, *uniform),
-        VortexOp::LocalMemPtr { raw64, result } => {
-            emit_csr_read_i64(ir, raw64, VortexCtaCsr::LocalMemAddr);
-            ir.push_line(format!("  {result} = inttoptr i64 {raw64} to ptr"));
-        }
-        VortexOp::Barrier {
-            barrier_id,
-            num_warps,
-        } => ir.push_line(format!(
-            "  call void asm sideeffect \".insn r {RISCV_CUSTOM0}, 4, 0, x0, $0, $1\", \"r,r,~{{memory}}\"(i32 {barrier_id}, i32 {num_warps}) #2"
-        )),
-        VortexOp::Binary {
-            result,
-            op,
-            ty,
-            lhs,
-            rhs,
-            overflow,
-        } => ir.push_line(format!(
-            "  {result} = {}{} {} {lhs}, {rhs}",
-            op.render(),
-            overflow.render(),
-            ty.render()
-        )),
-        VortexOp::Icmp {
-            result,
-            predicate,
-            ty,
-            lhs,
-            rhs,
-        } => ir.push_line(format!(
-            "  {result} = icmp {} {} {lhs}, {rhs}",
-            predicate.render(),
-            ty.render()
-        )),
-        VortexOp::Phi {
-            result,
-            ty,
-            incoming,
-        } => ir.push_line(format!(
-            "  {result} = phi {} {}",
-            ty.render(),
-            render_phi_incoming(incoming)
-        )),
-        VortexOp::Gep {
-            result,
-            element_ty,
-            base,
-            index,
-            inbounds,
-        } => {
-            let inbounds_text = if *inbounds { " inbounds" } else { "" };
-            ir.push_line(format!(
-                "  {result} = getelementptr{inbounds_text} {}, ptr {base}, i64 {index}",
-                element_ty.render()
-            ));
-        }
-        VortexOp::Cast {
-            result,
-            kind,
-            from_ty,
-            value,
-            to_ty,
-        } => ir.push_line(format!(
-            "  {result} = {} {} {value} to {}",
-            kind.render(),
-            from_ty.render(),
-            to_ty.render()
-        )),
-    }
-}
-
-fn emit_cta_csr_i32(
-    ir: &mut LlvmIrModule,
-    raw64: &str,
-    raw32: Option<&str>,
-    result: &str,
-    csr: VortexCtaCsr,
-    uniform: bool,
-) {
-    emit_csr_read_i64(ir, raw64, csr);
-    if uniform {
-        let raw32 = raw32.unwrap_or(result);
-        ir.push_line(format!("  {raw32} = trunc i64 {raw64} to i32"));
-        ir.push_line(format!(
-            "  {result} = call i32 {VORTEX_UNIFORM_INTRINSIC}(i32 {raw32}) #1"
-        ));
-    } else {
-        ir.push_line(format!("  {result} = trunc i64 {raw64} to i32"));
-    }
-}
-
-fn emit_csr_read_i64(ir: &mut LlvmIrModule, result: &str, csr: VortexCtaCsr) {
-    ir.push_line(format!(
-        "  {result} = call i64 asm sideeffect \"csrr $0, $1\", \"=r,i\"(i32 {}) #2",
-        csr.encoded()
-    ));
-}
-
-fn emit_terminator(ir: &mut LlvmIrModule, terminator: &VortexTerminator) {
-    match terminator {
-        VortexTerminator::Br { label } => ir.push_line(format!("  br label %{label}")),
-        VortexTerminator::CondBr {
-            cond,
-            then_label,
-            else_label,
-        } => ir.push_line(format!(
-            "  br i1 {cond}, label %{then_label}, label %{else_label}"
-        )),
-        VortexTerminator::RetVoid => ir.push_line("  ret void"),
-    }
-}
-
-fn render_type_list(types: &[LlvmType]) -> String {
-    let mut rendered = String::new();
-    for (index, ty) in types.iter().enumerate() {
-        if index != 0 {
-            rendered.push_str(", ");
-        }
-        rendered.push_str(&ty.render());
-    }
-    rendered
-}
-
-fn render_phi_incoming(incoming: &[PhiIncoming]) -> String {
-    let mut rendered = String::new();
-    for (index, item) in incoming.iter().enumerate() {
-        if index != 0 {
-            rendered.push_str(", ");
-        }
-        rendered.push_str(&format!("[ {}, %{} ]", item.value, item.label));
-    }
-    rendered
-}
-
-fn emit_declarations_and_attributes(ir: &mut LlvmIrModule) {
-    ir.push_line(format!("declare i32 {VORTEX_UNIFORM_INTRINSIC}(i32) #1"));
-    ir.blank_line();
-    ir.push_line("attributes #0 = { nounwind \"vortex-kernel\" \"frame-pointer\"=\"all\" \"no-trapping-math\"=\"true\" \"target-cpu\"=\"generic-rv64\" \"target-features\"=\"+64bit,+a,+d,+f,+m,+relax,+xvortex,+zaamo,+zalrsc,+zicond,+zicsr,+zmmul\" }");
-    ir.push_line("attributes #1 = { nounwind memory(none) }");
-    ir.push_line("attributes #2 = { nounwind }");
-}
-
-fn emit_module_flags(ir: &mut LlvmIrModule) {
-    ir.push_line("!llvm.module.flags = !{!0, !1, !2, !4, !5, !6}");
-    ir.push_line("!llvm.ident = !{!7}");
-    ir.blank_line();
-    ir.push_line("!0 = !{i32 1, !\"wchar_size\", i32 4}");
-    ir.push_line("!1 = !{i32 1, !\"target-abi\", !\"lp64d\"}");
-    ir.push_line("!2 = !{i32 6, !\"riscv-isa\", !3}");
-    ir.push_line("!3 = !{!\"rv64i2p1_m2p0_a2p1_f2p2_d2p2_zicond1p0_zicsr2p0_zmmul1p0_zaamo1p0_zalrsc1p0_xvortex1p0\"}");
-    ir.push_line("!4 = !{i32 1, !\"Code Model\", i32 3}");
-    ir.push_line("!5 = !{i32 7, !\"frame-pointer\", i32 2}");
-    ir.push_line("!6 = !{i32 8, !\"SmallDataLimit\", i32 0}");
-    ir.push_line("!7 = !{!\"mandrel generated Vortex LLVM IR\"}");
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        LlvmType, VortexBlock, VortexDeviceModule, VortexKernelFunction, VortexOp,
-        VortexStructType, VortexTerminator, render_vortex_device_module_llvm_ir,
+        LlvmType, PhiIncoming, VortexBlock, VortexDeviceModule, VortexKernelFunction, VortexOp,
+        VortexStructType, VortexTerminator, render_vortex_device_module_mlir,
     };
     use crate::codegen::vortex_ir::{VortexAxis, VortexCtaCsr};
 
     #[test]
-    fn renders_kernel_metadata_and_cta_csr_ops() {
-        let mut module =
-            VortexDeviceModule::new("test module", "mandrel://test.ll", "mandrel device-ir test");
+    fn renders_llvm_dialect_mlir_with_block_arguments_and_vortex_contracts() {
+        let mut module = VortexDeviceModule::new(
+            "mlir module",
+            "mandrel://test.mlir",
+            "mandrel device-ir mlir test",
+        );
         module.add_struct(VortexStructType::new("args_t", vec![LlvmType::I64]));
 
-        let mut entry = VortexBlock::new("entry", VortexTerminator::RetVoid);
+        let mut entry = VortexBlock::new("entry", VortexTerminator::br("loop"));
         entry.push_op(VortexOp::uniform_cta_csr_i32(
             "%block_x",
             "%block_x64",
             "%block_x_raw",
             VortexCtaCsr::BlockId(VortexAxis::X),
         ));
-        entry.push_op(VortexOp::cta_csr_i32(
-            "%thread_x",
-            "%thread_x64",
-            VortexCtaCsr::ThreadId(VortexAxis::X),
+
+        let mut loop_block = VortexBlock::new("loop", VortexTerminator::RetVoid);
+        loop_block.push_op(VortexOp::phi(
+            "%depth",
+            LlvmType::I32,
+            vec![PhiIncoming::new("0", "entry")],
         ));
 
         let mut kernel = VortexKernelFunction::new("demo_kernel", "arg", LlvmType::Ptr);
         kernel.push_block(entry);
+        kernel.push_block(loop_block);
         module.add_kernel(kernel);
 
-        let ir = render_vortex_device_module_llvm_ir(&module);
+        let mlir = render_vortex_device_module_mlir(&module);
 
-        assert!(ir.contains("%struct.args_t = type { i64 }"));
-        assert!(ir.contains("@llvm.global.annotations"));
-        assert!(ir.contains("vortex.kernel"));
-        assert!(ir.contains("define dso_local void @demo_kernel(ptr %arg) #0"));
-        assert!(ir.contains("@llvm.riscv.vx.uniform.i32.i32"));
-        assert!(ir.contains("csrr $0, $1"));
-        assert!(ir.contains("i32 3286"));
-        assert!(ir.contains("i32 3283"));
-    }
-
-    #[test]
-    fn lowers_local_memory_and_barrier_semantics() {
-        let mut module = VortexDeviceModule::new(
-            "barrier module",
-            "mandrel://barrier.ll",
-            "mandrel barrier test",
-        );
-        let mut entry = VortexBlock::new("entry", VortexTerminator::RetVoid);
-        entry.push_op(VortexOp::uniform_cta_csr_i32(
-            "%cta_id",
-            "%cta_id64",
-            "%cta_id_raw",
-            VortexCtaCsr::Id,
-        ));
-        entry.push_op(VortexOp::uniform_cta_csr_i32(
-            "%cta_size",
-            "%cta_size64",
-            "%cta_size_raw",
-            VortexCtaCsr::Size,
-        ));
-        entry.push_op(VortexOp::local_mem_ptr("%local", "%local64"));
-        entry.push_op(VortexOp::barrier("%cta_id", "%cta_size"));
-
-        let mut kernel = VortexKernelFunction::new("barrier_kernel", "arg", LlvmType::Ptr);
-        kernel.push_block(entry);
-        module.add_kernel(kernel);
-
-        let ir = render_vortex_device_module_llvm_ir(&module);
-
-        assert!(ir.contains("i32 3280"));
-        assert!(ir.contains("i32 3282"));
-        assert!(ir.contains("i32 3295"));
-        assert!(ir.contains(".insn r 11, 4, 0, x0, $0, $1"));
-        assert!(ir.contains("inttoptr i64 %local64 to ptr"));
+        assert!(mlir.contains("llvm.target_triple = \"riscv64-unknown-unknown-elf\""));
+        assert!(mlir.contains("llvm.mlir.global appending @\"llvm.global.annotations\""));
+        assert!(mlir.contains("vortex-kernel"));
+        assert!(mlir.contains("llvm.func @demo_kernel(%arg: !llvm.ptr)"));
+        assert!(mlir.contains("llvm.inline_asm has_side_effects \"csrr"));
+        assert!(mlir.contains("llvm.call @\"llvm.riscv.vx.uniform.i32.i32\""));
+        assert!(mlir.contains("llvm.br ^loop(%ventry_c1_i32 : i32)"));
+        assert!(mlir.contains("^loop(%depth: i32):"));
     }
 }

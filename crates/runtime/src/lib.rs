@@ -40,31 +40,33 @@ pub struct ModelIo {
 pub const fn example_io() -> ModelIo {
     ModelIo {
         input: TensorDesc {
-            shape: Shape::new([1, 128]),
+            shape: Shape::new([64, 64]),
             element_type: ElementType::I8,
             layout: Layout::RowMajor,
         },
         output: TensorDesc {
-            shape: Shape::new([1, 64]),
-            element_type: ElementType::I32,
+            shape: Shape::new([64, 64]),
+            element_type: ElementType::I8,
             layout: Layout::RowMajor,
         },
     }
 }
 
-pub const fn example_vortex_plan() -> RuntimePlan<2, 6> {
+pub const fn example_attention_vortex_plan() -> RuntimePlan<2, 8> {
     let launch = KernelLaunch::new(
-        KernelSymbol::MatmulI8I32,
-        Dim3::new(8, 8, 1),
+        KernelSymbol::AttentionPrefillI8,
+        Dim3::new(16, 1, 1),
         Dim3::new(4, 4, 1),
-        0,
+        2336,
         [
             KernelArg::buffer(0, 0),
             KernelArg::buffer(1, 1),
             KernelArg::buffer(2, 2),
-            KernelArg::u32(3, 32),
-            KernelArg::u32(4, 32),
+            KernelArg::buffer(3, 3),
+            KernelArg::u32(4, 64),
             KernelArg::u32(5, 64),
+            KernelArg::u32(6, 4),
+            KernelArg::u32(7, 16),
         ],
     );
 
@@ -76,20 +78,20 @@ pub const fn example_vortex_plan() -> RuntimePlan<2, 6> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeTarget, example_io, example_vortex_plan};
+    use super::{RuntimeTarget, example_attention_vortex_plan, example_io};
     use mandrel_device::{DeviceBackend, DeviceCommand};
 
     #[test]
-    fn example_io_is_int8_to_int32() {
+    fn example_io_is_attention_prefill_shaped() {
         let io = example_io();
 
-        assert_eq!(io.input.shape.dims(), &[1, 128]);
-        assert_eq!(io.output.shape.dims(), &[1, 64]);
+        assert_eq!(io.input.shape.dims(), &[64, 64]);
+        assert_eq!(io.output.shape.dims(), &[64, 64]);
     }
 
     #[test]
-    fn example_plan_targets_vortex() {
-        let plan = example_vortex_plan();
+    fn example_plan_targets_vortex_attention_prefill() {
+        let plan = example_attention_vortex_plan();
 
         assert_eq!(plan.target.device_backend(), DeviceBackend::VortexSimx);
         assert_eq!(plan.command_buffer.len(), 2);

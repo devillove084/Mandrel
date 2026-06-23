@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 use mandrel_device::{DeviceBackend, DeviceCapabilities};
-use mandrel_model_ir::{MatmulOp, MatmulShape, MatmulTensors, MatmulTypes};
+use mandrel_model_ir::{AttentionOp, AttentionShape, AttentionTensors};
 
 pub const BACKEND_NAME: &str = "mandrel-vortex";
 
@@ -23,50 +23,41 @@ pub struct GgmlTensor2d {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GgmlMulMatRequest {
-    pub lhs: GgmlTensor2d,
-    pub rhs: GgmlTensor2d,
+pub struct GgmlAttentionPrefillRequest {
+    pub q: GgmlTensor2d,
+    pub k: GgmlTensor2d,
+    pub v: GgmlTensor2d,
     pub out: GgmlTensor2d,
 }
 
-impl GgmlMulMatRequest {
-    pub const fn i8_i32(m: u32, n: u32, k: u32) -> Self {
+impl GgmlAttentionPrefillRequest {
+    pub const fn dense_i8(sequence: u32, head_dim: u32) -> Self {
+        let tensor = GgmlTensor2d {
+            rows: sequence,
+            cols: head_dim,
+            dtype: GgmlDType::I8,
+        };
         Self {
-            lhs: GgmlTensor2d {
-                rows: m,
-                cols: k,
-                dtype: GgmlDType::I8,
-            },
-            rhs: GgmlTensor2d {
-                rows: k,
-                cols: n,
-                dtype: GgmlDType::I8,
-            },
-            out: GgmlTensor2d {
-                rows: m,
-                cols: n,
-                dtype: GgmlDType::I32,
-            },
+            q: tensor,
+            k: tensor,
+            v: tensor,
+            out: tensor,
         }
     }
 
-    pub fn to_model_ir_for(self, caps: DeviceCapabilities) -> Option<MatmulOp> {
-        if !can_offload_mul_mat(self, caps) {
+    pub fn to_model_ir_for(self, caps: DeviceCapabilities) -> Option<AttentionOp> {
+        if !can_offload_attention_prefill(self, caps) {
             return None;
         }
 
-        Some(MatmulOp::new(
-            MatmulTensors::new(0, 1, 2),
-            MatmulShape::new(
-                self.lhs.rows as usize,
-                self.rhs.cols as usize,
-                self.lhs.cols as usize,
-            ),
-            MatmulTypes::i8_to_i32(),
+        Some(AttentionOp::new(
+            AttentionTensors::new(0, 1, 2, 3),
+            AttentionShape::new(self.q.rows as usize, self.q.cols as usize),
+            mandrel_core::ElementType::I8,
         ))
     }
 
-    pub fn to_model_ir(self) -> Option<MatmulOp> {
+    pub fn to_model_ir(self) -> Option<AttentionOp> {
         self.to_model_ir_for(DeviceCapabilities::vortex_simx_default())
     }
 }
@@ -75,7 +66,10 @@ pub const fn backend_name() -> &'static str {
     BACKEND_NAME
 }
 
-pub const fn can_offload_mul_mat(request: GgmlMulMatRequest, caps: DeviceCapabilities) -> bool {
+pub const fn can_offload_attention_prefill(
+    request: GgmlAttentionPrefillRequest,
+    caps: DeviceCapabilities,
+) -> bool {
     if !matches!(
         caps.backend,
         DeviceBackend::VortexSimx | DeviceBackend::VortexRtl | DeviceBackend::VortexFpga
@@ -84,17 +78,26 @@ pub const fn can_offload_mul_mat(request: GgmlMulMatRequest, caps: DeviceCapabil
     }
 
     caps.supports_int8
-        && matches!(request.lhs.dtype, GgmlDType::I8)
-        && matches!(request.rhs.dtype, GgmlDType::I8)
-        && matches!(request.out.dtype, GgmlDType::I32)
-        && request.lhs.cols == request.rhs.rows
-        && request.lhs.rows == request.out.rows
-        && request.rhs.cols == request.out.cols
+        && tensor_is_dense_i8(request.q)
+        && tensor_is_dense_i8(request.k)
+        && tensor_is_dense_i8(request.v)
+        && tensor_is_dense_i8(request.out)
+        && same_shape_dims(request.q, request.k)
+        && same_shape_dims(request.q, request.v)
+        && same_shape_dims(request.q, request.out)
+}
+
+const fn tensor_is_dense_i8(tensor: GgmlTensor2d) -> bool {
+    tensor.rows != 0 && tensor.cols != 0 && matches!(tensor.dtype, GgmlDType::I8)
+}
+
+const fn same_shape_dims(lhs: GgmlTensor2d, rhs: GgmlTensor2d) -> bool {
+    lhs.rows == rhs.rows && lhs.cols == rhs.cols
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{GgmlMulMatRequest, backend_name};
+    use super::{GgmlAttentionPrefillRequest, backend_name};
     use mandrel_device::DeviceCapabilities;
 
     #[test]
@@ -103,17 +106,18 @@ mod tests {
     }
 
     #[test]
-    fn accepts_i8_mul_mat_request() {
-        let request = GgmlMulMatRequest::i8_i32(32, 32, 64);
+    fn accepts_dense_i8_attention_prefill_request() {
+        let request = GgmlAttentionPrefillRequest::dense_i8(64, 64);
 
-        assert!(super::can_offload_mul_mat(
+        assert!(super::can_offload_attention_prefill(
             request,
             DeviceCapabilities::vortex_simx_default()
         ));
         let op = match request.to_model_ir_for(DeviceCapabilities::vortex_simx_default()) {
             Some(op) => op,
-            None => panic!("expected model-ir matmul op"),
+            None => panic!("expected model-ir attention op"),
         };
-        assert_eq!(op.shape.k, 64);
+        assert_eq!(op.shape.sequence, 64);
+        assert_eq!(op.shape.head_dim, 64);
     }
 }

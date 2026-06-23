@@ -11,6 +11,7 @@ default = ["std"]
 std = ["mandrel-core/std"]
 
 [dependencies]
+libm = "0.2"
 mandrel-core = { workspace = true }
 
 [lib]

@@ -1,6 +1,5 @@
 use std::env;
 use std::ffi::{CStr, CString};
-use std::fmt;
 use std::mem::{size_of, transmute_copy};
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -10,6 +9,8 @@ use std::rc::Rc;
 use std::os::unix::ffi::OsStrExt;
 
 use std::os::raw::{c_char, c_int, c_uint, c_void};
+
+use snafu::Snafu;
 
 pub const VX_MEM_READ: u32 = 0x1;
 pub const VX_MEM_WRITE: u32 = 0x2;
@@ -30,65 +31,39 @@ type VxEventH = *mut c_void;
 type VxModuleH = *mut c_void;
 type VxKernelH = *mut c_void;
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum VortexError {
+    #[snafu(display(
+        "failed to load Vortex runtime library: {message}\ntried candidates:\n{}",
+        format_runtime_library_candidates(candidates)
+    ))]
     Load {
         candidates: Vec<PathBuf>,
         message: String,
     },
-    Symbol {
-        name: &'static str,
-        message: String,
-    },
-    PathContainsNul {
-        path: PathBuf,
-    },
+    #[snafu(display("failed to load Vortex symbol {name}: {message}"))]
+    Symbol { name: &'static str, message: String },
+    #[snafu(display("path contains an interior NUL byte: {}", path.display()))]
+    PathContainsNul { path: PathBuf },
+    #[snafu(display("Vortex API {operation} failed with code {code}: {message}"))]
     Api {
         operation: &'static str,
         code: VxResult,
         message: String,
     },
-    InvalidValue(&'static str),
+    #[snafu(display("invalid Vortex value: {message}"))]
+    InvalidValue { message: &'static str },
 }
-
-impl fmt::Display for VortexError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Load {
-                candidates,
-                message,
-            } => {
-                writeln!(f, "failed to load Vortex runtime library: {message}")?;
-                writeln!(f, "tried candidates:")?;
-                for candidate in candidates {
-                    writeln!(f, "  {}", candidate.display())?;
-                }
-                Ok(())
-            }
-            Self::Symbol { name, message } => {
-                write!(f, "failed to load Vortex symbol {name}: {message}")
-            }
-            Self::PathContainsNul { path } => {
-                write!(f, "path contains an interior NUL byte: {}", path.display())
-            }
-            Self::Api {
-                operation,
-                code,
-                message,
-            } => {
-                write!(
-                    f,
-                    "Vortex API {operation} failed with code {code}: {message}"
-                )
-            }
-            Self::InvalidValue(message) => write!(f, "invalid Vortex value: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for VortexError {}
 
 pub type Result<T> = std::result::Result<T, VortexError>;
+
+fn format_runtime_library_candidates(candidates: &[PathBuf]) -> String {
+    candidates
+        .iter()
+        .map(|candidate| format!("  {}", candidate.display()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 #[derive(Clone)]
 pub struct Runtime {
@@ -120,9 +95,9 @@ impl Runtime {
         let result = unsafe { (self.api.vx_device_open)(index, &mut handle) };
         self.api.check(result, "vx_device_open")?;
         if handle.is_null() {
-            return Err(VortexError::InvalidValue(
-                "vx_device_open returned a null device",
-            ));
+            return Err(VortexError::InvalidValue {
+                message: "vx_device_open returned a null device",
+            });
         }
         Ok(Device {
             api: self.api.clone(),
@@ -163,9 +138,9 @@ impl Device {
         let result = unsafe { (self.api.vx_queue_create)(self.handle, &info, &mut handle) };
         self.api.check(result, "vx_queue_create")?;
         if handle.is_null() {
-            return Err(VortexError::InvalidValue(
-                "vx_queue_create returned a null queue",
-            ));
+            return Err(VortexError::InvalidValue {
+                message: "vx_queue_create returned a null queue",
+            });
         }
         Ok(Queue {
             api: self.api.clone(),
@@ -180,9 +155,9 @@ impl Device {
         let result = unsafe { (self.api.vx_buffer_create)(self.handle, size, access, &mut handle) };
         self.api.check(result, "vx_buffer_create")?;
         if handle.is_null() {
-            return Err(VortexError::InvalidValue(
-                "vx_buffer_create returned a null buffer",
-            ));
+            return Err(VortexError::InvalidValue {
+                message: "vx_buffer_create returned a null buffer",
+            });
         }
         Ok(Buffer {
             api: self.api.clone(),
@@ -216,9 +191,9 @@ impl Device {
             unsafe { (self.api.vx_module_load_file)(self.handle, c_path.as_ptr(), &mut handle) };
         self.api.check(result, "vx_module_load_file")?;
         if handle.is_null() {
-            return Err(VortexError::InvalidValue(
-                "vx_module_load_file returned a null module",
-            ));
+            return Err(VortexError::InvalidValue {
+                message: "vx_module_load_file returned a null module",
+            });
         }
         Ok(Module {
             api: self.api.clone(),
@@ -265,6 +240,27 @@ impl Queue {
         self.api.check(result, "vx_enqueue_write")
     }
 
+    pub fn enqueue_read<T>(&self, dst: &mut [T], src: &Buffer, offset: u64) -> Result<Event> {
+        let bytes = byte_len(dst)?;
+        let mut event = ptr::null_mut();
+        // SAFETY: `dst.as_mut_ptr()` is valid for `bytes` bytes for the duration of the call,
+        // and `event` is a valid out pointer. The caller controls queue ordering/waits.
+        let result = unsafe {
+            (self.api.vx_enqueue_read)(
+                self.handle,
+                dst.as_mut_ptr().cast::<c_void>(),
+                src.handle,
+                offset,
+                bytes,
+                0,
+                ptr::null(),
+                &mut event,
+            )
+        };
+        self.api.check(result, "vx_enqueue_read")?;
+        Event::new(self.api.clone(), event, "vx_enqueue_read")
+    }
+
     pub fn enqueue_read_after<T>(
         &self,
         dst: &mut [T],
@@ -303,7 +299,9 @@ impl Queue {
         lmem_size: u32,
     ) -> Result<Event> {
         if !(1..=3).contains(&ndim) {
-            return Err(VortexError::InvalidValue("launch ndim must be 1, 2, or 3"));
+            return Err(VortexError::InvalidValue {
+                message: "launch ndim must be 1, 2, or 3",
+            });
         }
         let info = VxLaunchInfo {
             struct_size: size_of::<VxLaunchInfo>(),
@@ -368,8 +366,9 @@ pub struct Module {
 
 impl Module {
     pub fn get_kernel(&self, name: &str) -> Result<Kernel> {
-        let c_name = CString::new(name)
-            .map_err(|_| VortexError::InvalidValue("kernel name contains an interior NUL byte"))?;
+        let c_name = CString::new(name).map_err(|_| VortexError::InvalidValue {
+            message: "kernel name contains an interior NUL byte",
+        })?;
         let mut handle = ptr::null_mut();
         // SAFETY: `c_name` is NUL-terminated and lives for the call, while `handle`
         // is a valid out pointer for the kernel handle.
@@ -377,9 +376,9 @@ impl Module {
             unsafe { (self.api.vx_module_get_kernel)(self.handle, c_name.as_ptr(), &mut handle) };
         self.api.check(result, "vx_module_get_kernel")?;
         if handle.is_null() {
-            return Err(VortexError::InvalidValue(
-                "vx_module_get_kernel returned a null kernel",
-            ));
+            return Err(VortexError::InvalidValue {
+                message: "vx_module_get_kernel returned a null kernel",
+            });
         }
         Ok(Kernel {
             api: self.api.clone(),
@@ -428,11 +427,13 @@ pub struct Event {
 impl Event {
     fn new(api: Rc<VortexApi>, handle: VxEventH, operation: &'static str) -> Result<Self> {
         if handle.is_null() {
-            return Err(VortexError::InvalidValue(match operation {
-                "vx_enqueue_launch" => "vx_enqueue_launch returned a null event",
-                "vx_enqueue_read" => "vx_enqueue_read returned a null event",
-                _ => "Vortex enqueue returned a null event",
-            }));
+            return Err(VortexError::InvalidValue {
+                message: match operation {
+                    "vx_enqueue_launch" => "vx_enqueue_launch returned a null event",
+                    "vx_enqueue_read" => "vx_enqueue_read returned a null event",
+                    _ => "Vortex enqueue returned a null event",
+                },
+            });
         }
         Ok(Self { api, handle })
     }
@@ -550,7 +551,7 @@ impl VortexApi {
         for candidate in &candidates {
             match DynamicLibrary::open(candidate) {
                 Ok(library) => return Self::from_library(library),
-                Err(error) => last_error = error,
+                Err(error) => last_error = error.to_string(),
             }
         }
         Err(VortexError::Load {
@@ -656,9 +657,12 @@ fn byte_len<T>(slice: &[T]) -> Result<u64> {
     let bytes = slice
         .len()
         .checked_mul(size_of::<T>())
-        .ok_or(VortexError::InvalidValue("slice byte length overflow"))?;
-    u64::try_from(bytes)
-        .map_err(|_| VortexError::InvalidValue("slice byte length does not fit u64"))
+        .ok_or(VortexError::InvalidValue {
+            message: "slice byte length overflow",
+        })?;
+    u64::try_from(bytes).map_err(|_| VortexError::InvalidValue {
+        message: "slice byte length does not fit u64",
+    })
 }
 
 struct DynamicLibrary {
@@ -666,13 +670,16 @@ struct DynamicLibrary {
 }
 
 impl DynamicLibrary {
-    fn open(path: &Path) -> std::result::Result<Self, String> {
-        let c_path = path_to_cstring(path).map_err(|error| error.to_string())?;
+    fn open(path: &Path) -> Result<Self> {
+        let c_path = path_to_cstring(path)?;
         // SAFETY: `c_path` is a valid NUL-terminated path. `dlopen` returns either
         // a library handle or NULL with an error retrievable through `dlerror`.
         let handle = unsafe { dlopen(c_path.as_ptr(), RTLD_NOW) };
         if handle.is_null() {
-            return Err(dl_error_message());
+            return Err(VortexError::Load {
+                candidates: vec![path.to_path_buf()],
+                message: dl_error_message(),
+            });
         }
         Ok(Self { handle })
     }

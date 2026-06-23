@@ -7,13 +7,13 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-genco = "0.17.10"
 mandrel-compiler = { workspace = true }
-mandrel-device = { workspace = true }
 mandrel-kernel-ir = { workspace = true }
 mandrel-model-ir = { workspace = true }
 mandrel-profiler = { workspace = true }
 mandrel-schedule = { workspace = true }
+snafu = { workspace = true, features = ["std"] }
+tracing = { workspace = true }
 
 [lib]
 name = "mandrel_vortex_backend"

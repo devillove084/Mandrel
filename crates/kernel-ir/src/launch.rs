@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn launch_counts_threads_and_workgroups() {
         let launch = KernelLaunch::new(
-            KernelSymbol::MatmulI8I32,
+            KernelSymbol::AttentionPrefillI8,
             Dim3::new(4, 2, 1),
             Dim3::new(16, 16, 1),
             1024,

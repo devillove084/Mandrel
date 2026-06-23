@@ -50,94 +50,17 @@ impl Tensor {
             quantization: Some(Quantization::symmetric_unit()),
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MatmulShape {
-    pub m: usize,
-    pub n: usize,
-    pub k: usize,
-}
-
-impl MatmulShape {
-    pub const fn new(m: usize, n: usize, k: usize) -> Self {
-        Self { m, n, k }
-    }
-
-    pub const fn square(size: usize) -> Self {
+    pub const fn rank2_f32_row_major(id: TensorId, rows: usize, cols: usize) -> Self {
         Self {
-            m: size,
-            n: size,
-            k: size,
+            id,
+            desc: TensorDesc {
+                shape: Shape::new([rows, cols]),
+                element_type: ElementType::F32,
+                layout: Layout::RowMajor,
+            },
+            quantization: None,
         }
-    }
-
-    pub const fn output_elements(self) -> usize {
-        self.m * self.n
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MatmulTensors {
-    pub lhs: TensorId,
-    pub rhs: TensorId,
-    pub out: TensorId,
-}
-
-impl MatmulTensors {
-    pub const fn new(lhs: TensorId, rhs: TensorId, out: TensorId) -> Self {
-        Self { lhs, rhs, out }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MatmulTypes {
-    pub lhs: ElementType,
-    pub rhs: ElementType,
-    pub out: ElementType,
-}
-
-impl MatmulTypes {
-    pub const fn i8_to_i32() -> Self {
-        Self {
-            lhs: ElementType::I8,
-            rhs: ElementType::I8,
-            out: ElementType::I32,
-        }
-    }
-
-    pub const fn f32_to_f32() -> Self {
-        Self {
-            lhs: ElementType::F32,
-            rhs: ElementType::F32,
-            out: ElementType::F32,
-        }
-    }
-}
-
-/// HLO/ggml-like matmul node payload. Scheduling and device placement are separate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MatmulOp {
-    pub tensors: MatmulTensors,
-    pub shape: MatmulShape,
-    pub types: MatmulTypes,
-}
-
-impl MatmulOp {
-    pub const fn new(tensors: MatmulTensors, shape: MatmulShape, types: MatmulTypes) -> Self {
-        Self {
-            tensors,
-            shape,
-            types,
-        }
-    }
-
-    pub const fn ggml_mul_mat_i8_demo() -> Self {
-        Self::new(
-            MatmulTensors::new(0, 1, 2),
-            MatmulShape::new(32, 32, 64),
-            MatmulTypes::i8_to_i32(),
-        )
     }
 }
 
@@ -150,6 +73,10 @@ pub struct AttentionShape {
 impl AttentionShape {
     pub const fn new(sequence: usize, head_dim: usize) -> Self {
         Self { sequence, head_dim }
+    }
+
+    pub const fn output_elements(self) -> usize {
+        self.sequence * self.head_dim
     }
 }
 
@@ -167,7 +94,7 @@ impl AttentionTensors {
     }
 }
 
-/// Compact classic-attention payload for future Vortex kernel fusion experiments.
+/// Compact attention-prefill payload. Scheduling and KV-cache layout are selected separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttentionOp {
     pub tensors: AttentionTensors,
@@ -198,14 +125,78 @@ impl AttentionOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoftmaxAxis {
+    Rows,
+    Cols,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoftmaxShape {
+    pub rows: usize,
+    pub cols: usize,
+}
+
+impl SoftmaxShape {
+    pub const fn new(rows: usize, cols: usize) -> Self {
+        Self { rows, cols }
+    }
+
+    pub const fn elements(self) -> usize {
+        self.rows * self.cols
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoftmaxTensors {
+    pub input: TensorId,
+    pub out: TensorId,
+}
+
+impl SoftmaxTensors {
+    pub const fn new(input: TensorId, out: TensorId) -> Self {
+        Self { input, out }
+    }
+}
+
+/// Row/column softmax payload used as an attention-building-block IR node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoftmaxOp {
+    pub tensors: SoftmaxTensors,
+    pub shape: SoftmaxShape,
+    pub axis: SoftmaxAxis,
+    pub element_type: ElementType,
+}
+
+impl SoftmaxOp {
+    pub const fn new(
+        tensors: SoftmaxTensors,
+        shape: SoftmaxShape,
+        axis: SoftmaxAxis,
+        element_type: ElementType,
+    ) -> Self {
+        Self {
+            tensors,
+            shape,
+            axis,
+            element_type,
+        }
+    }
+
+    pub const fn row_f32_demo() -> Self {
+        Self::new(
+            SoftmaxTensors::new(0, 1),
+            SoftmaxShape::new(2, 4),
+            SoftmaxAxis::Rows,
+            ElementType::F32,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpKind {
-    Matmul(MatmulOp),
     Attention(AttentionOp),
+    Softmax(SoftmaxOp),
     Transpose2d {
-        input: TensorId,
-        out: TensorId,
-    },
-    Softmax {
         input: TensorId,
         out: TensorId,
     },
@@ -246,17 +237,7 @@ impl TargetConstraints {
 
 #[cfg(test)]
 mod tests {
-    use super::{AttentionOp, MatmulOp, TargetConstraints, TargetKind};
-
-    #[test]
-    fn builds_ggml_mul_mat_demo_op() {
-        let op = MatmulOp::ggml_mul_mat_i8_demo();
-
-        assert_eq!(op.shape.m, 32);
-        assert_eq!(op.shape.n, 32);
-        assert_eq!(op.shape.k, 64);
-        assert_eq!(op.shape.output_elements(), 1024);
-    }
+    use super::{AttentionOp, SoftmaxAxis, SoftmaxOp, TargetConstraints, TargetKind};
 
     #[test]
     fn builds_attention_prefill_demo_op() {
@@ -268,6 +249,17 @@ mod tests {
         assert_eq!(op.tensors.out, 3);
         assert_eq!(op.shape.sequence, 64);
         assert_eq!(op.shape.head_dim, 64);
+        assert_eq!(op.shape.output_elements(), 4096);
+    }
+
+    #[test]
+    fn builds_row_softmax_demo_op() {
+        let op = SoftmaxOp::row_f32_demo();
+
+        assert_eq!(op.tensors.input, 0);
+        assert_eq!(op.tensors.out, 1);
+        assert_eq!(op.shape.elements(), 8);
+        assert_eq!(op.axis, SoftmaxAxis::Rows);
     }
 
     #[test]

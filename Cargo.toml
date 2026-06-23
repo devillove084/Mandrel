@@ -41,6 +41,10 @@ mandrel-profiler = { path = "crates/profiler", default-features = false }
 mandrel-runtime = { path = "crates/runtime", default-features = false }
 mandrel-schedule = { path = "crates/schedule", default-features = false }
 mandrel-vortex-backend = { path = "crates/vortex-backend" }
+snafu = { version = "0.8", default-features = false }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "deny", priority = -1 }

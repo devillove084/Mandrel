@@ -1,17 +1,22 @@
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Output};
 
-use mandrel_compiler::{VortexMatmulPlan, compile_experimental_vortex_matmul_kernel};
-use mandrel_model_ir::MatmulOp;
-use mandrel_vortex_backend::{
-    DEFAULT_VORTEX_SYSTEM_TOOLDIR, MatmulShape, VortexBackend, VortexBackendConfig, VortexConfig,
-    VortexStatus, VortexToolchainMode, demo_matmul_plan,
-    generate_experimental_vortex_tiled_matmul_llvm_ir, generate_vortex_matmul_cpp,
-    generate_vortex_matmul_llvm_ir,
+use mandrel_compiler::{
+    CompileError, VortexAttentionPrefillPlan, compile_vortex_attention_prefill_kernel,
 };
+use mandrel_model_ir::AttentionOp;
+use mandrel_vortex_backend::{
+    AttentionPrefillI8Run, DEFAULT_VORTEX_SYSTEM_TOOLDIR, VortexBackend, VortexBackendConfig,
+    VortexBackendError, VortexCodegenError, VortexCommandRunner, VortexConfig,
+    VortexMlirKernelArtifacts, VortexMlirKernelBuildRequest, VortexStatus, VortexToolchainError,
+    VortexToolchainMode, VortexToolchainResult, build_vortex_mlir_kernel_artifacts,
+    generate_vortex_attention_prefill_mlir, reference_attention_prefill_i8,
+};
+use snafu::Snafu;
 use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::filter::EnvFilter;
@@ -28,8 +33,85 @@ const DEFAULT_VORTEX_SOURCE_TOOLDIR: &str = "external/vortex-source-tools";
 const DEFAULT_VORTEX_LLVM_DIR: &str = "external/llvm-vortex";
 const DEFAULT_VORTEX_LLVM_BUILD_DIR: &str = "external/llvm-vortex-build";
 const DEFAULT_VORTEX_COMPILER_RT_BUILD_DIR: &str = "external/llvm-vortex-compiler-rt-build64";
-const DEFAULT_VORTEX_LLVM_URL: &str = "https://github.com/vortexgpgpu/llvm.git";
+const DEFAULT_VORTEX_LLVM_URL: &str = "https://github.com/devillove084/llvm.git";
 const DEFAULT_VORTEX_LLVM_REF: &str = "vortex_3.x";
+const DEFAULT_VORTEX_LLVM_PROJECTS: &str = "clang;lld;mlir";
+const LOG_COMMAND_MAX_CHARS: usize = 4096;
+
+type Result<T> = std::result::Result<T, XtaskError>;
+
+#[derive(Debug, Snafu)]
+enum XtaskError {
+    #[snafu(display("{message}"))]
+    Message { message: String },
+    #[snafu(display("failed to spawn {phase}: {source}"))]
+    CommandSpawn { phase: String, source: io::Error },
+    #[snafu(display("{phase} failed with status: {status}; command: {command}"))]
+    CommandFailed {
+        phase: String,
+        status: ExitStatus,
+        command: String,
+    },
+    #[snafu(display("{phase} failed with status: {status}; command: {command}; stderr: {stderr}"))]
+    CommandFailedWithStderr {
+        phase: String,
+        status: ExitStatus,
+        command: String,
+        stderr: String,
+    },
+    #[snafu(display("Vortex toolchain error: {source}"))]
+    VortexToolchain { source: VortexToolchainError },
+    #[snafu(display("Vortex backend error: {source}"))]
+    VortexBackend { source: VortexBackendError },
+    #[snafu(display("Vortex codegen error: {source}"))]
+    VortexCodegen { source: VortexCodegenError },
+    #[snafu(display("compile error: {source}"))]
+    Compile { source: CompileError },
+}
+
+impl XtaskError {
+    fn message(message: impl Into<String>) -> Self {
+        Self::Message {
+            message: message.into(),
+        }
+    }
+}
+
+impl From<String> for XtaskError {
+    fn from(message: String) -> Self {
+        Self::message(message)
+    }
+}
+
+impl From<&str> for XtaskError {
+    fn from(message: &str) -> Self {
+        Self::message(message)
+    }
+}
+
+impl From<VortexToolchainError> for XtaskError {
+    fn from(source: VortexToolchainError) -> Self {
+        Self::VortexToolchain { source }
+    }
+}
+
+impl From<VortexBackendError> for XtaskError {
+    fn from(source: VortexBackendError) -> Self {
+        Self::VortexBackend { source }
+    }
+}
+
+impl From<VortexCodegenError> for XtaskError {
+    fn from(source: VortexCodegenError) -> Self {
+        Self::VortexCodegen { source }
+    }
+}
+
+impl From<CompileError> for XtaskError {
+    fn from(source: CompileError) -> Self {
+        Self::Compile { source }
+    }
+}
 
 fn main() {
     let _log_guard = match init_logging() {
@@ -47,7 +129,7 @@ fn main() {
     }
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<()> {
     let command = env::args().nth(1).unwrap_or_else(|| "help".to_owned());
     let workspace_root = workspace_root()?;
     info!(command, root = %workspace_root.display(), "starting xtask command");
@@ -60,27 +142,22 @@ fn run() -> Result<(), String> {
         "vortex-install" => install_vortex(&workspace_root)?,
         "vortex-env" => write_and_print_vortex_env(&workspace_root)?,
         "vortex-status" => print_vortex_status(&workspace_root)?,
-        "vortex-plan-matmul" => print_demo_matmul_plan()?,
+        "vortex-plan-attention" => print_attention_prefill_plan()?,
+        "vortex-generate-attention" => generate_vortex_attention_kernel_source(&workspace_root)?,
+        "vortex-run-attention" => run_vortex_attention_correctness(&workspace_root)?,
+        "__vortex-run-attention-inner" => run_vortex_attention_correctness_inner(&workspace_root)?,
         "vortex-run-vecadd" => run_vortex_vecadd(&workspace_root)?,
-        "vortex-run-matmul" => run_vortex_matmul(&workspace_root)?,
-        "vortex-run-matmul-tiled" => run_vortex_matmul_tiled(&workspace_root)?,
-        "vortex-run-matmul-exec" => {
-            run_vortex_matmul_exec(&workspace_root, VortexMatmulSmokeKernel::Direct)?
-        }
-        "vortex-run-matmul-tiled-exec" => {
-            run_vortex_matmul_exec(&workspace_root, VortexMatmulSmokeKernel::ExperimentalTiled)?
-        }
         other => {
             eprintln!("unknown xtask command: {other}");
             print_help();
-            return Err("xtask failed".to_owned());
+            return Err(XtaskError::message("xtask failed"));
         }
     }
 
     Ok(())
 }
 
-fn workspace_root() -> Result<PathBuf, String> {
+fn workspace_root() -> Result<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let crates_dir = manifest_dir.parent().ok_or_else(|| {
         format!(
@@ -91,7 +168,7 @@ fn workspace_root() -> Result<PathBuf, String> {
     crates_dir
         .parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| format!("crates dir has no parent: {}", crates_dir.display()))
+        .ok_or_else(|| format!("crates dir has no parent: {}", crates_dir.display()).into())
 }
 
 #[derive(Clone, Copy)]
@@ -102,20 +179,20 @@ enum LogFormat {
 }
 
 impl LogFormat {
-    fn from_env() -> Result<Self, String> {
+    fn from_env() -> Result<Self> {
         let raw = env::var("MANDREL_LOG_FORMAT").unwrap_or_else(|_| "compact".to_owned());
         match raw.as_str() {
             "compact" => Ok(Self::Compact),
             "pretty" => Ok(Self::Pretty),
             "json" => Ok(Self::Json),
-            other => Err(format!(
+            other => Err(XtaskError::message(format!(
                 "unsupported MANDREL_LOG_FORMAT '{other}'; use compact, pretty, or json"
-            )),
+            ))),
         }
     }
 }
 
-fn init_logging() -> Result<Option<WorkerGuard>, String> {
+fn init_logging() -> Result<Option<WorkerGuard>> {
     let filter = env::var("MANDREL_LOG").unwrap_or_else(|_| "info".to_owned());
     let filter =
         EnvFilter::try_new(filter).map_err(|error| format!("invalid MANDREL_LOG: {error}"))?;
@@ -141,7 +218,7 @@ fn init_logging() -> Result<Option<WorkerGuard>, String> {
         return Ok(Some(guard));
     }
 
-    install_subscriber(filter, format, std::io::stdout, true)?;
+    install_subscriber(filter, format, io::stdout, true)?;
     Ok(None)
 }
 
@@ -151,12 +228,7 @@ fn non_empty_parent(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-fn install_subscriber<W>(
-    filter: EnvFilter,
-    format: LogFormat,
-    writer: W,
-    ansi: bool,
-) -> Result<(), String>
+fn install_subscriber<W>(filter: EnvFilter, format: LogFormat, writer: W, ansi: bool) -> Result<()>
 where
     W: for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
 {
@@ -180,7 +252,7 @@ where
             .json()
             .try_init(),
     }
-    .map_err(|error| format!("failed to install tracing subscriber: {error}"))
+    .map_err(|error| XtaskError::message(format!("failed to install tracing subscriber: {error}")))
 }
 
 fn print_help() {
@@ -192,17 +264,16 @@ fn print_help() {
            cargo xtask vortex-install      # clone, configure, prepare toolchain, build, install, write env\n\
            cargo xtask vortex-env          # write/print external/vortex-env.sh for manual shells\n\
            cargo xtask vortex-status       # show checkout/build/install/env status\n\
-           cargo xtask vortex-plan-matmul  # print custom ggml-like MUL_MAT -> Vortex kernel plan\n\
-           cargo xtask vortex-run-vecadd   # run Vortex official vecadd through ci/blackbox.sh when available\n\
-           cargo xtask vortex-run-matmul   # build and run the project i8*i8->i32 Vortex matmul smoke\n\
-           cargo xtask vortex-run-matmul-tiled # build and run the experimental tiled LLVM-IR matmul smoke\n\n\
+           cargo xtask vortex-plan-attention # print dense attention-prefill online-softmax plan\n\
+           cargo xtask vortex-generate-attention # generate/validate attention MLIR through Vortex LLVM\n\
+           cargo xtask vortex-run-attention # run generated attention vxbin through Vortex simx and compare output\n\
+           cargo xtask vortex-run-vecadd   # run Vortex official vecadd through ci/blackbox.sh when available\n\n\
          Main backend target:\n\
            Vortex RISC-V GPGPU, route B custom backend via mandrel runtime/kernel IR\n\n\
          Local install defaults:\n\
            source: external/vortex\n\
            build:  external/vortex-build\n\
-           tools:  external/vortex-tools, external/vortex-system-tools for system mode,\n\
-                   or external/vortex-source-tools for source-built llvm-vortex\n\
+           tools:  external/vortex-source-tools by default; external/vortex-system-tools for system mode\n\
            env:    external/vortex-env.sh\n\n\
          Vortex toolchain mode:\n\
            MANDREL_VORTEX_TOOLCHAIN_MODE=auto|prebuilt|system|skip\n\
@@ -211,12 +282,12 @@ fn print_help() {
            system maps Ubuntu/system packages into Vortex's expected local layout\n\
            skip assumes MANDREL_VORTEX_TOOLDIR is already populated\n\
            MANDREL_VORTEX_BUILD_PROFILE=full|simx|software|none controls build scope\n\
-           MANDREL_VORTEX_CODEGEN=cpp|llvm-ir selects generated matmul device source; default cpp\n\
+           Device codegen is MLIR-only; xtask lowers kernel.mlir with mlir-translate before clang\n\
            MANDREL_ALLOW_LIBGCC_BUILTINS=1 enables explicit experimental libgcc fallback\n\
            Source LLVM build knobs: MANDREL_VORTEX_LLVM_DIR, MANDREL_VORTEX_LLVM_BUILD_DIR,\n\
             MANDREL_VORTEX_COMPILER_RT_BUILD_DIR, MANDREL_VORTEX_LLVM_URL,\n\
-            MANDREL_VORTEX_LLVM_REF, MANDREL_VORTEX_LLVM_TARGETS,\n\
-            MANDREL_VORTEX_TOOLCHAIN_JOBS\n\n\
+            MANDREL_VORTEX_LLVM_REF, MANDREL_VORTEX_LLVM_PROJECTS,\n\
+            MANDREL_VORTEX_LLVM_TARGETS, MANDREL_VORTEX_TOOLCHAIN_JOBS\n\n\
          Slow GitHub downloads in Vortex toolchain scripts:\n\
            MANDREL_GITHUB_PROXY_PREFIX=https://gh-proxy.org/ cargo vortex-install\n\
            MANDREL_FETCH_RETRIES=5 cargo vortex-install\n\n\
@@ -227,7 +298,7 @@ fn print_help() {
     );
 }
 
-fn fetch_vortex(workspace_root: &Path) -> Result<(), String> {
+fn fetch_vortex(workspace_root: &Path) -> Result<()> {
     let config = VortexConfig::from_env(workspace_root)?;
     log_vortex_config(&config, "fetching/verifying Vortex source");
     clone_vortex_if_needed(&config)?;
@@ -236,7 +307,7 @@ fn fetch_vortex(workspace_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn prepare_and_print_vortex_system_tools(workspace_root: &Path) -> Result<(), String> {
+fn prepare_and_print_vortex_system_tools(workspace_root: &Path) -> Result<()> {
     let mut config = VortexConfig::from_env(workspace_root)?;
     config.toolchain_mode = VortexToolchainMode::System;
     if env::var_os("MANDREL_VORTEX_TOOLDIR").is_none() {
@@ -260,12 +331,13 @@ struct VortexSourceToolchainConfig {
     compiler_rt_build_dir: PathBuf,
     llvm_url: String,
     llvm_ref: String,
+    llvm_projects: String,
     llvm_targets: String,
     jobs: usize,
 }
 
 impl VortexSourceToolchainConfig {
-    fn from_env(workspace_root: &Path, tool_dir: PathBuf) -> Result<Self, String> {
+    fn from_env(workspace_root: &Path, tool_dir: PathBuf) -> Result<Self> {
         Ok(Self {
             tool_dir,
             llvm_source_dir: project_path_from_env(
@@ -287,6 +359,8 @@ impl VortexSourceToolchainConfig {
                 .unwrap_or_else(|| DEFAULT_VORTEX_LLVM_URL.to_owned()),
             llvm_ref: non_empty_env("MANDREL_VORTEX_LLVM_REF")
                 .unwrap_or_else(|| DEFAULT_VORTEX_LLVM_REF.to_owned()),
+            llvm_projects: non_empty_env("MANDREL_VORTEX_LLVM_PROJECTS")
+                .unwrap_or_else(|| DEFAULT_VORTEX_LLVM_PROJECTS.to_owned()),
             llvm_targets: non_empty_env("MANDREL_VORTEX_LLVM_TARGETS")
                 .unwrap_or_else(default_vortex_llvm_targets_for_host),
             jobs: source_toolchain_jobs()?,
@@ -299,6 +373,12 @@ impl VortexSourceToolchainConfig {
 
     fn llvm_bin_dir(&self) -> PathBuf {
         self.llvm_prefix().join("bin")
+    }
+
+    fn llvm_projects_include(&self, project: &str) -> bool {
+        self.llvm_projects
+            .split(|ch| ch == ';' || ch == ',')
+            .any(|candidate| candidate.trim().eq_ignore_ascii_case(project))
     }
 
     fn llvm_lib_dir(&self) -> PathBuf {
@@ -323,7 +403,7 @@ impl VortexSourceToolchainConfig {
     }
 }
 
-fn install_vortex_source_toolchain(workspace_root: &Path) -> Result<(), String> {
+fn install_vortex_source_toolchain(workspace_root: &Path) -> Result<()> {
     let mut vortex_config = VortexConfig::from_env(workspace_root)?;
     vortex_config.toolchain_mode = VortexToolchainMode::Skip;
     if env::var_os("MANDREL_VORTEX_TOOLDIR").is_none() {
@@ -365,6 +445,7 @@ fn log_vortex_source_toolchain_config(config: &VortexSourceToolchainConfig) {
         compiler_rt_build_dir = %config.compiler_rt_build_dir.display(),
         llvm_url = %config.llvm_url,
         llvm_ref = %config.llvm_ref,
+        llvm_projects = %config.llvm_projects,
         llvm_targets = %config.llvm_targets,
         jobs = config.jobs,
         "Vortex source toolchain config"
@@ -380,7 +461,9 @@ fn log_vortex_source_toolchain_config(config: &VortexSourceToolchainConfig) {
         "  compiler-rt build:   {}",
         config.compiler_rt_build_dir.display()
     );
+    println!("  llvm url:            {}", config.llvm_url);
     println!("  llvm ref:            {}", config.llvm_ref);
+    println!("  llvm projects:       {}", config.llvm_projects);
     println!("  llvm targets:        {}", config.llvm_targets);
     println!("  build jobs:          {}", config.jobs);
 }
@@ -400,13 +483,15 @@ fn default_vortex_llvm_targets_for_host() -> String {
     }
 }
 
-fn source_toolchain_jobs() -> Result<usize, String> {
+fn source_toolchain_jobs() -> Result<usize> {
     if let Some(raw) = non_empty_env("MANDREL_VORTEX_TOOLCHAIN_JOBS") {
         let jobs = raw
             .parse::<usize>()
             .map_err(|error| format!("invalid MANDREL_VORTEX_TOOLCHAIN_JOBS '{raw}': {error}"))?;
         if jobs == 0 {
-            return Err("MANDREL_VORTEX_TOOLCHAIN_JOBS must be at least 1".to_owned());
+            return Err(XtaskError::message(
+                "MANDREL_VORTEX_TOOLCHAIN_JOBS must be at least 1",
+            ));
         }
         return Ok(jobs);
     }
@@ -421,7 +506,7 @@ fn source_toolchain_jobs() -> Result<usize, String> {
     Ok(available.clamp(1, 4))
 }
 
-fn require_source_toolchain_programs() -> Result<(), String> {
+fn require_source_toolchain_programs() -> Result<()> {
     let missing: Vec<&str> = [
         "git",
         "cmake",
@@ -440,16 +525,16 @@ fn require_source_toolchain_programs() -> Result<(), String> {
         Err(format!(
             "missing required programs for Vortex source toolchain build: {}. Suggested Ubuntu packages: build-essential cmake ninja-build git make python3 gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf picolibc-riscv64-unknown-elf.",
             missing.join(", ")
-        ))
+        ).into())
     }
 }
 
-fn prepare_vortex_source_toolchain_riscv_layout(config: &VortexConfig) -> Result<(), String> {
+fn prepare_vortex_source_toolchain_riscv_layout(config: &VortexConfig) -> Result<()> {
     if config.xlen != 64 {
         return Err(format!(
             "cargo vortex-toolchain-source currently builds the rv64 Vortex compiler-rt path only; got MANDREL_VORTEX_XLEN={}. Use MANDREL_VORTEX_XLEN=64 or extend this command for rv32.",
             config.xlen
-        ));
+        ).into());
     }
 
     let riscv_c_include_dir = require_riscv_c_library_include_dir()?;
@@ -527,7 +612,7 @@ fn prepare_vortex_source_toolchain_riscv_layout(config: &VortexConfig) -> Result
     Ok(())
 }
 
-fn link_riscv_gcc_support_dir(tool_dir: &Path) -> Result<(), String> {
+fn link_riscv_gcc_support_dir(tool_dir: &Path) -> Result<()> {
     let archive = match require_riscv_libgcc_library() {
         Ok(path) => path,
         Err(error) => {
@@ -551,7 +636,7 @@ fn link_riscv_gcc_support_dir(tool_dir: &Path) -> Result<(), String> {
     replace_symlink_or_empty_dir(&link, version_dir)
 }
 
-fn configure_vortex_for_source_toolchain(config: &VortexConfig) -> Result<(), String> {
+fn configure_vortex_for_source_toolchain(config: &VortexConfig) -> Result<()> {
     fs::create_dir_all(&config.build_dir).map_err(|error| {
         format!(
             "failed to create Vortex build directory '{}': {error}",
@@ -575,7 +660,7 @@ fn configure_vortex_for_source_toolchain(config: &VortexConfig) -> Result<(), St
     )
 }
 
-fn build_vortex_kernel_runtime_archive(config: &VortexConfig) -> Result<(), String> {
+fn build_vortex_kernel_runtime_archive(config: &VortexConfig) -> Result<()> {
     println!("Building Vortex sw/kernel runtime archive for compiler-rt link checks.");
     let mut make = Command::new("make");
     make.current_dir(&config.build_dir)
@@ -591,19 +676,30 @@ fn build_vortex_kernel_runtime_archive(config: &VortexConfig) -> Result<(), Stri
         Err(format!(
             "Vortex sw/kernel build completed but '{}' was not found",
             archive.display()
-        ))
+        )
+        .into())
     }
 }
 
 fn clone_or_update_vortex_llvm_source(
     source_config: &VortexSourceToolchainConfig,
     vortex_config: &VortexConfig,
-) -> Result<(), String> {
+) -> Result<()> {
     if source_config.llvm_source_dir.join(".git").is_dir() {
         println!(
             "Updating Vortex LLVM checkout: {}",
             source_config.llvm_source_dir.display()
         );
+        let mut remote = Command::new("git");
+        remote
+            .arg("--no-pager")
+            .arg("-C")
+            .arg(&source_config.llvm_source_dir)
+            .args(["remote", "set-url", "origin"])
+            .arg(&source_config.llvm_url);
+        apply_github_proxy_git_env(&mut remote, vortex_config);
+        run_checked(remote, "llvm-vortex.set-origin")?;
+
         run_checked_with_retries(
             || {
                 let mut fetch = Command::new("git");
@@ -635,7 +731,7 @@ fn clone_or_update_vortex_llvm_source(
         return Err(format!(
             "LLVM source directory '{}' exists but is not a git checkout; set MANDREL_VORTEX_LLVM_DIR or remove it",
             source_config.llvm_source_dir.display()
-        ));
+        ).into());
     }
 
     if let Some(parent) = source_config
@@ -677,7 +773,7 @@ fn clone_or_update_vortex_llvm_source(
 fn update_vortex_llvm_submodules(
     source_config: &VortexSourceToolchainConfig,
     vortex_config: &VortexConfig,
-) -> Result<(), String> {
+) -> Result<()> {
     run_checked_with_retries(
         || {
             let mut submodules = Command::new("git");
@@ -694,13 +790,13 @@ fn update_vortex_llvm_submodules(
     )
 }
 
-fn build_vortex_llvm(source_config: &VortexSourceToolchainConfig) -> Result<(), String> {
+fn build_vortex_llvm(source_config: &VortexSourceToolchainConfig) -> Result<()> {
     let llvm_source = source_config.llvm_source_dir.join("llvm");
     if !llvm_source.join("CMakeLists.txt").is_file() {
         return Err(format!(
             "Vortex LLVM source directory '{}' does not contain llvm/CMakeLists.txt; clone may have failed or layout changed",
             source_config.llvm_source_dir.display()
-        ));
+        ).into());
     }
 
     fs::create_dir_all(&source_config.llvm_build_dir).map_err(|error| {
@@ -717,8 +813,8 @@ fn build_vortex_llvm(source_config: &VortexSourceToolchainConfig) -> Result<(), 
     })?;
 
     println!(
-        "Configuring llvm-vortex with targets {}",
-        source_config.llvm_targets
+        "Configuring llvm-vortex with projects {} and targets {}",
+        source_config.llvm_projects, source_config.llvm_targets
     );
     let mut configure = Command::new("cmake");
     configure
@@ -733,7 +829,10 @@ fn build_vortex_llvm(source_config: &VortexSourceToolchainConfig) -> Result<(), 
             "-DCMAKE_INSTALL_PREFIX={}",
             source_config.llvm_prefix().display()
         ))
-        .arg("-DLLVM_ENABLE_PROJECTS=clang;lld")
+        .arg(format!(
+            "-DLLVM_ENABLE_PROJECTS={}",
+            source_config.llvm_projects
+        ))
         .arg(format!(
             "-DLLVM_TARGETS_TO_BUILD={}",
             source_config.llvm_targets
@@ -743,6 +842,9 @@ fn build_vortex_llvm(source_config: &VortexSourceToolchainConfig) -> Result<(), 
         .arg("-DLLVM_INCLUDE_BENCHMARKS=OFF")
         .arg("-DLLVM_INCLUDE_EXAMPLES=OFF")
         .arg("-DLLVM_INCLUDE_TESTS=OFF");
+    if source_config.llvm_projects_include("mlir") {
+        configure.arg("-DMLIR_INCLUDE_TESTS=OFF");
+    }
     run_checked(configure, "llvm-vortex.configure")?;
 
     println!(
@@ -762,23 +864,50 @@ fn build_vortex_llvm(source_config: &VortexSourceToolchainConfig) -> Result<(), 
     run_checked(install, "llvm-vortex.install")
 }
 
-fn verify_vortex_llvm_install(source_config: &VortexSourceToolchainConfig) -> Result<(), String> {
+fn verify_vortex_llvm_install(source_config: &VortexSourceToolchainConfig) -> Result<()> {
     let clang = source_config.llvm_bin_dir().join("clang");
     if !clang.is_file() {
         return Err(format!(
             "llvm-vortex install did not produce clang at '{}'",
             clang.display()
-        ));
+        )
+        .into());
     }
 
     let mut version = Command::new(&clang);
     version.arg("--version");
     apply_source_llvm_env(&mut version, source_config)?;
     run_checked(version, "llvm-vortex.clang-version")?;
-    verify_vortex_llvm_features(source_config)
+    verify_vortex_llvm_features(source_config)?;
+    verify_vortex_mlir_tools_if_requested(source_config)
 }
 
-fn verify_vortex_llvm_features(source_config: &VortexSourceToolchainConfig) -> Result<(), String> {
+fn verify_vortex_mlir_tools_if_requested(
+    source_config: &VortexSourceToolchainConfig,
+) -> Result<()> {
+    if !source_config.llvm_projects_include("mlir") {
+        return Ok(());
+    }
+
+    for tool in ["mlir-opt", "mlir-translate"] {
+        let path = source_config.llvm_bin_dir().join(tool);
+        if !path.is_file() {
+            return Err(format!(
+                "llvm-vortex install enabled MLIR but did not produce {tool} at '{}'; check MANDREL_VORTEX_LLVM_PROJECTS or the LLVM build log",
+                path.display()
+            ).into());
+        }
+
+        let mut version = Command::new(&path);
+        version.arg("--version");
+        apply_source_llvm_env(&mut version, source_config)?;
+        run_checked(version, &format!("llvm-vortex.{tool}-version"))?;
+    }
+
+    Ok(())
+}
+
+fn verify_vortex_llvm_features(source_config: &VortexSourceToolchainConfig) -> Result<()> {
     fs::create_dir_all(&source_config.compiler_rt_build_dir).map_err(|error| {
         format!(
             "failed to create compiler-rt/probe build directory '{}': {error}",
@@ -826,7 +955,7 @@ fn verify_vortex_llvm_features(source_config: &VortexSourceToolchainConfig) -> R
     if stderr.contains("not a recognized feature") || stderr.contains("is not recognized") {
         return Err(format!(
             "llvm-vortex feature probe rejected +xvortex/+zicond; this looks like system/upstream LLVM, not Vortex-patched LLVM. stderr: {stderr}"
-        ));
+        ).into());
     }
     Ok(())
 }
@@ -834,13 +963,14 @@ fn verify_vortex_llvm_features(source_config: &VortexSourceToolchainConfig) -> R
 fn build_vortex_compiler_rt64(
     source_config: &VortexSourceToolchainConfig,
     vortex_config: &VortexConfig,
-) -> Result<(), String> {
+) -> Result<()> {
     let compiler_rt_source = source_config.llvm_source_dir.join("compiler-rt");
     if !compiler_rt_source.join("CMakeLists.txt").is_file() {
         return Err(format!(
             "Vortex LLVM source directory '{}' does not contain compiler-rt/CMakeLists.txt",
             source_config.llvm_source_dir.display()
-        ));
+        )
+        .into());
     }
 
     let vortex_kernel_archive = vortex_config.build_dir.join("sw/kernel/libvortex.a");
@@ -848,14 +978,16 @@ fn build_vortex_compiler_rt64(
         return Err(format!(
             "compiler-rt requires Vortex kernel runtime archive '{}'; build sw/kernel first",
             vortex_kernel_archive.display()
-        ));
+        )
+        .into());
     }
     let link_script = vortex_config.source_dir.join("sw/kernel/scripts/link64.ld");
     if !link_script.is_file() {
         return Err(format!(
             "compiler-rt requires Vortex link script '{}'",
             link_script.display()
-        ));
+        )
+        .into());
     }
 
     reset_cmake_build_dir_if_cached(
@@ -956,7 +1088,7 @@ fn build_vortex_compiler_rt64(
     run_checked(install, "compiler-rt.install")
 }
 
-fn reset_cmake_build_dir_if_cached(build_dir: &Path, description: &str) -> Result<(), String> {
+fn reset_cmake_build_dir_if_cached(build_dir: &Path, description: &str) -> Result<()> {
     if build_dir.join("CMakeCache.txt").is_file() {
         println!(
             "Removing stale {description} CMake build directory '{}'.",
@@ -971,14 +1103,14 @@ fn reset_cmake_build_dir_if_cached(build_dir: &Path, description: &str) -> Resul
     }
 
     fs::create_dir_all(build_dir).map_err(|error| {
-        format!(
+        XtaskError::message(format!(
             "failed to create {description} build directory '{}': {error}",
             build_dir.display()
-        )
+        ))
     })
 }
 
-fn require_vortex_lld(source_config: &VortexSourceToolchainConfig) -> Result<PathBuf, String> {
+fn require_vortex_lld(source_config: &VortexSourceToolchainConfig) -> Result<PathBuf> {
     for program in ["ld.lld", "llvm-lld", "lld"] {
         let candidate = source_config.llvm_bin_dir().join(program);
         if candidate.is_file() {
@@ -988,12 +1120,11 @@ fn require_vortex_lld(source_config: &VortexSourceToolchainConfig) -> Result<Pat
     Err(format!(
         "llvm-vortex install under '{}' did not provide ld.lld/llvm-lld/lld",
         source_config.llvm_bin_dir().display()
-    ))
+    )
+    .into())
 }
 
-fn verify_vortex_compiler_rt_install(
-    source_config: &VortexSourceToolchainConfig,
-) -> Result<(), String> {
+fn verify_vortex_compiler_rt_install(source_config: &VortexSourceToolchainConfig) -> Result<()> {
     let archive = source_config.compiler_rt_builtins_archive();
     if archive.is_file() {
         println!("Vortex compiler-rt builtins ready: {}", archive.display());
@@ -1002,14 +1133,15 @@ fn verify_vortex_compiler_rt_install(
         Err(format!(
             "compiler-rt install completed but expected builtins archive was not found: {}",
             archive.display()
-        ))
+        )
+        .into())
     }
 }
 
 fn apply_source_llvm_env(
     command: &mut Command,
     source_config: &VortexSourceToolchainConfig,
-) -> Result<(), String> {
+) -> Result<()> {
     prepend_env_path(command, "PATH", source_config.llvm_bin_dir())?;
     prepend_env_path(command, "LD_LIBRARY_PATH", source_config.llvm_lib_dir())?;
     Ok(())
@@ -1033,7 +1165,7 @@ fn print_source_toolchain_success(
     print_env_usage(vortex_config);
 }
 
-fn install_vortex(workspace_root: &Path) -> Result<(), String> {
+fn install_vortex(workspace_root: &Path) -> Result<()> {
     let config = VortexConfig::from_env(workspace_root)?;
     log_vortex_config(
         &config,
@@ -1074,7 +1206,7 @@ fn log_vortex_config(config: &VortexConfig, message: &str) {
     );
 }
 
-fn clone_vortex_if_needed(config: &VortexConfig) -> Result<(), String> {
+fn clone_vortex_if_needed(config: &VortexConfig) -> Result<()> {
     if config.source_dir.join(".git").is_dir() {
         info!(source_dir = %config.source_dir.display(), "Vortex checkout already exists");
         configure_git_proxy_for_checkout(config)?;
@@ -1086,7 +1218,7 @@ fn clone_vortex_if_needed(config: &VortexConfig) -> Result<(), String> {
         return Err(format!(
             "Vortex directory '{}' exists but is not a git checkout; set MANDREL_VORTEX_DIR or remove it",
             config.source_dir.display()
-        ));
+        ).into());
     }
 
     if let Some(parent) = config
@@ -1120,7 +1252,7 @@ fn clone_vortex_if_needed(config: &VortexConfig) -> Result<(), String> {
     update_submodules(config)
 }
 
-fn update_submodules(config: &VortexConfig) -> Result<(), String> {
+fn update_submodules(config: &VortexConfig) -> Result<()> {
     run_checked_with_retries(
         || {
             let mut command = Command::new("git");
@@ -1137,7 +1269,7 @@ fn update_submodules(config: &VortexConfig) -> Result<(), String> {
     )
 }
 
-fn configure_git_proxy_for_checkout(config: &VortexConfig) -> Result<(), String> {
+fn configure_git_proxy_for_checkout(config: &VortexConfig) -> Result<()> {
     let Some(base) = config.git_proxy_base() else {
         return Ok(());
     };
@@ -1162,7 +1294,7 @@ fn configure_git_proxy_for_checkout(config: &VortexConfig) -> Result<(), String>
     Ok(())
 }
 
-fn git_config_contains_value(repo_dir: &Path, key: &str, value: &str) -> Result<bool, String> {
+fn git_config_contains_value(repo_dir: &Path, key: &str, value: &str) -> Result<bool> {
     let output = Command::new("git")
         .arg("--no-pager")
         .arg("-C")
@@ -1185,10 +1317,11 @@ fn git_config_contains_value(repo_dir: &Path, key: &str, value: &str) -> Result<
         "failed to inspect git config '{key}' with status {}; stderr: {}",
         output.status,
         String::from_utf8_lossy(&output.stderr)
-    ))
+    )
+    .into())
 }
 
-fn checkout_vortex_ref_if_requested(config: &VortexConfig) -> Result<(), String> {
+fn checkout_vortex_ref_if_requested(config: &VortexConfig) -> Result<()> {
     let Some(reference) = &config.reference else {
         return Ok(());
     };
@@ -1220,10 +1353,7 @@ fn checkout_vortex_ref_if_requested(config: &VortexConfig) -> Result<(), String>
     update_submodules(config)
 }
 
-fn configure_and_build_vortex(
-    config: &VortexConfig,
-    run_prebuilt_toolchain: bool,
-) -> Result<(), String> {
+fn configure_and_build_vortex(config: &VortexConfig, run_prebuilt_toolchain: bool) -> Result<()> {
     fs::create_dir_all(&config.build_dir).map_err(|error| {
         format!(
             "failed to create Vortex build directory '{}': {error}",
@@ -1252,7 +1382,7 @@ fn configure_and_build_vortex(
         return Err(format!(
             "Vortex toolchain script was not generated at '{}'. Configure may have failed or upstream layout changed.",
             toolchain_script.display()
-        ));
+        ).into());
     }
 
     if run_prebuilt_toolchain {
@@ -1309,7 +1439,7 @@ enum VortexBuildProfile {
 }
 
 impl VortexBuildProfile {
-    fn from_env_or_default(config: &VortexConfig) -> Result<Self, String> {
+    fn from_env_or_default(config: &VortexConfig) -> Result<Self> {
         if let Some(raw) = non_empty_env("MANDREL_VORTEX_BUILD_PROFILE") {
             return match raw.as_str() {
                 "full" => Ok(Self::Full),
@@ -1318,7 +1448,7 @@ impl VortexBuildProfile {
                 "none" | "configure" => Ok(Self::None),
                 other => Err(format!(
                     "unsupported MANDREL_VORTEX_BUILD_PROFILE '{other}'; use full, simx, software, or none"
-                )),
+                ).into()),
             };
         }
 
@@ -1349,7 +1479,7 @@ impl VortexBuildProfile {
 fn build_vortex_with_profile(
     config: &VortexConfig,
     build_profile: VortexBuildProfile,
-) -> Result<(), String> {
+) -> Result<()> {
     match build_profile {
         VortexBuildProfile::Full => {
             println!("Building full Vortex tree. This can take a while.");
@@ -1378,7 +1508,7 @@ fn build_vortex_with_profile(
     }
 }
 
-fn build_vortex_software_sdk(config: &VortexConfig) -> Result<(), String> {
+fn build_vortex_software_sdk(config: &VortexConfig) -> Result<()> {
     for subdir in ["sw/kernel", "sw/runtime/stub"] {
         let mut make = Command::new("make");
         make.current_dir(&config.build_dir).arg("-C").arg(subdir);
@@ -1388,7 +1518,7 @@ fn build_vortex_software_sdk(config: &VortexConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn build_vortex_simx(config: &VortexConfig) -> Result<(), String> {
+fn build_vortex_simx(config: &VortexConfig) -> Result<()> {
     let mut third_party = Command::new("make");
     third_party
         .current_dir(config.source_dir.join("third_party"))
@@ -1404,12 +1534,12 @@ fn build_vortex_simx(config: &VortexConfig) -> Result<(), String> {
     run_checked(simx, "vortex.make.simx")
 }
 
-fn prepare_vortex_system_tools(config: &VortexConfig) -> Result<(), String> {
+fn prepare_vortex_system_tools(config: &VortexConfig) -> Result<()> {
     if config.xlen != 64 {
         return Err(format!(
             "MANDREL_VORTEX_TOOLCHAIN_MODE=system currently supports MANDREL_VORTEX_XLEN=64 only; got {}. Use a source-built Vortex toolchain with MANDREL_VORTEX_TOOLCHAIN_MODE=skip for XLEN=32.",
             config.xlen
-        ));
+        ).into());
     }
 
     require_system_programs(["g++", "make", "python3"])?;
@@ -1544,7 +1674,7 @@ fn prepare_vortex_system_tools(config: &VortexConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn reject_obvious_incompatible_prebuilt_tools(config: &VortexConfig) -> Result<(), String> {
+fn reject_obvious_incompatible_prebuilt_tools(config: &VortexConfig) -> Result<()> {
     if env::consts::ARCH == "x86_64" {
         return Ok(());
     }
@@ -1568,14 +1698,14 @@ fn reject_obvious_incompatible_prebuilt_tools(config: &VortexConfig) -> Result<(
                 path.display(),
                 file_output.trim(),
                 config.tool_dir.display()
-            ));
+            ).into());
         }
     }
 
     Ok(())
 }
 
-fn inspect_file_type(path: &Path) -> Result<Option<String>, String> {
+fn inspect_file_type(path: &Path) -> Result<Option<String>> {
     let Some(file_program) = find_program_on_path("file") else {
         warn!(path = %path.display(), "`file` command not found; cannot inspect Vortex tool binary architecture");
         return Ok(None);
@@ -1595,7 +1725,7 @@ fn write_riscv_gcc_wrapper(
     wrapper_path: &Path,
     real_program: &Path,
     include_dir: &Path,
-) -> Result<(), String> {
+) -> Result<()> {
     let content = format!(
         "#!/usr/bin/env bash\n\
          set -euo pipefail\n\
@@ -1608,7 +1738,7 @@ fn write_riscv_gcc_wrapper(
     Ok(())
 }
 
-fn replace_file_content(path: &Path, content: &[u8], description: &str) -> Result<(), String> {
+fn replace_file_content(path: &Path, content: &[u8], description: &str) -> Result<()> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -1627,7 +1757,8 @@ fn replace_file_content(path: &Path, content: &[u8], description: &str) -> Resul
                 return Err(format!(
                     "cannot replace directory '{}' with {description}",
                     path.display()
-                ));
+                )
+                .into());
             }
             fs::remove_file(path).map_err(|error| {
                 format!(
@@ -1636,24 +1767,25 @@ fn replace_file_content(path: &Path, content: &[u8], description: &str) -> Resul
                 )
             })?;
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(format!(
                 "failed to inspect existing {description} '{}': {error}",
                 path.display()
-            ));
+            )
+            .into());
         }
     }
 
     fs::write(path, content).map_err(|error| {
-        format!(
+        XtaskError::message(format!(
             "failed to write {description} '{}': {error}",
             path.display()
-        )
+        ))
     })
 }
 
-fn require_riscv_c_library_include_dir() -> Result<PathBuf, String> {
+fn require_riscv_c_library_include_dir() -> Result<PathBuf> {
     if let Some(path) = env::var_os("MANDREL_RISCV_C_INCLUDE_DIR").map(PathBuf::from) {
         if path.join("newlib.h").is_file() {
             return Ok(path);
@@ -1661,7 +1793,8 @@ fn require_riscv_c_library_include_dir() -> Result<PathBuf, String> {
         return Err(format!(
             "MANDREL_RISCV_C_INCLUDE_DIR points to '{}' but newlib.h was not found there",
             path.display()
-        ));
+        )
+        .into());
     }
 
     for candidate in [
@@ -1675,12 +1808,12 @@ fn require_riscv_c_library_include_dir() -> Result<PathBuf, String> {
         }
     }
 
-    Err(
-        "missing RISC-V bare-metal C library headers: Vortex device runtime includes <newlib.h>. Install Ubuntu package `picolibc-riscv64-unknown-elf`, or set MANDREL_RISCV_C_INCLUDE_DIR to a directory containing newlib.h.".to_owned(),
-    )
+    Err(XtaskError::message(
+        "missing RISC-V bare-metal C library headers: Vortex device runtime includes <newlib.h>. Install Ubuntu package `picolibc-riscv64-unknown-elf`, or set MANDREL_RISCV_C_INCLUDE_DIR to a directory containing newlib.h.",
+    ))
 }
 
-fn require_riscv_c_library_lib_dir(include_dir: &Path) -> Result<PathBuf, String> {
+fn require_riscv_c_library_lib_dir(include_dir: &Path) -> Result<PathBuf> {
     if let Some(path) = env::var_os("MANDREL_RISCV_C_LIB_DIR").map(PathBuf::from) {
         if path.join("libc.a").is_file() && path.join("libm.a").is_file() {
             return Ok(path);
@@ -1688,7 +1821,8 @@ fn require_riscv_c_library_lib_dir(include_dir: &Path) -> Result<PathBuf, String
         return Err(format!(
             "MANDREL_RISCV_C_LIB_DIR points to '{}' but libc.a and libm.a were not found there",
             path.display()
-        ));
+        )
+        .into());
     }
 
     let mut candidates = Vec::new();
@@ -1709,9 +1843,9 @@ fn require_riscv_c_library_lib_dir(include_dir: &Path) -> Result<PathBuf, String
         }
     }
 
-    Err(
-        "missing RISC-V bare-metal C libraries: Vortex kernels link with -lc and -lm. Install Ubuntu package `picolibc-riscv64-unknown-elf`, or set MANDREL_RISCV_C_LIB_DIR to a directory containing libc.a and libm.a.".to_owned(),
-    )
+    Err(XtaskError::message(
+        "missing RISC-V bare-metal C libraries: Vortex kernels link with -lc and -lm. Install Ubuntu package `picolibc-riscv64-unknown-elf`, or set MANDREL_RISCV_C_LIB_DIR to a directory containing libc.a and libm.a.",
+    ))
 }
 
 enum RiscvBuiltinsRuntime {
@@ -1719,7 +1853,7 @@ enum RiscvBuiltinsRuntime {
     Libgcc { archive: PathBuf },
 }
 
-fn require_riscv_builtins_runtime(config: &VortexConfig) -> Result<RiscvBuiltinsRuntime, String> {
+fn require_riscv_builtins_runtime(config: &VortexConfig) -> Result<RiscvBuiltinsRuntime> {
     let allow_libgcc = allow_libgcc_builtins()?;
 
     if let Some(path) = env::var_os("MANDREL_RISCV_BUILTINS_LIB").map(PathBuf::from) {
@@ -1741,10 +1875,10 @@ fn require_riscv_builtins_runtime(config: &VortexConfig) -> Result<RiscvBuiltins
     Err(format!(
         "missing RISC-V compiler-rt builtins for Vortex system mode. Expected '{}', a system LLVM libclang_rt.builtins-riscv64.a, or MANDREL_RISCV_BUILTINS_LIB pointing to a real compiler-rt archive. Vortex upstream documents this archive as part of llvm-vortex/compiler-rt; build/install that first for the supported path. Experimental ABI-aligned libgcc compatibility is disabled by default; set MANDREL_ALLOW_LIBGCC_BUILTINS=1 only if you intentionally want to use riscv64-unknown-elf-gcc's -march=rv64imafd -mabi=lp64d libgcc.a through the Vortex libcrt compatibility path.",
         expected.display()
-    ))
+    ).into())
 }
 
-fn allow_libgcc_builtins() -> Result<bool, String> {
+fn allow_libgcc_builtins() -> Result<bool> {
     let Some(value) = non_empty_env("MANDREL_ALLOW_LIBGCC_BUILTINS") else {
         return Ok(false);
     };
@@ -1754,19 +1888,20 @@ fn allow_libgcc_builtins() -> Result<bool, String> {
         "0" | "false" | "no" | "off" => Ok(false),
         other => Err(format!(
             "unsupported MANDREL_ALLOW_LIBGCC_BUILTINS value '{other}'; use 1/0, true/false, yes/no, or on/off"
-        )),
+        ).into()),
     }
 }
 
 fn classify_explicit_riscv_builtins_library(
     path: PathBuf,
     allow_libgcc: bool,
-) -> Result<RiscvBuiltinsRuntime, String> {
+) -> Result<RiscvBuiltinsRuntime> {
     if !path.is_file() {
         return Err(format!(
             "MANDREL_RISCV_BUILTINS_LIB points to '{}' but no file was found there",
             path.display()
-        ));
+        )
+        .into());
     }
 
     if is_libgcc_or_link_to_libgcc_archive(&path) {
@@ -1774,7 +1909,7 @@ fn classify_explicit_riscv_builtins_library(
             return Err(format!(
                 "MANDREL_RISCV_BUILTINS_LIB points to libgcc.a at '{}', but libgcc builtins are experimental and disabled by default. Use Vortex llvm-vortex/compiler-rt for the supported path, or set MANDREL_ALLOW_LIBGCC_BUILTINS=1 to opt in explicitly.",
                 path.display()
-            ));
+            ).into());
         }
         Ok(RiscvBuiltinsRuntime::Libgcc { archive: path })
     } else {
@@ -1813,7 +1948,7 @@ fn is_usable_compiler_rt_candidate(path: &Path) -> bool {
     path.is_file() && !is_libgcc_or_link_to_libgcc_archive(path)
 }
 
-fn require_riscv_libgcc_library() -> Result<PathBuf, String> {
+fn require_riscv_libgcc_library() -> Result<PathBuf> {
     let gcc = require_program("riscv64-unknown-elf-gcc")?;
     let output = Command::new(&gcc)
         .args(["-march=rv64imafd", "-mabi=lp64d", "-print-libgcc-file-name"])
@@ -1829,7 +1964,8 @@ fn require_riscv_libgcc_library() -> Result<PathBuf, String> {
             "failed to query RISC-V libgcc path from '{}' with status {}",
             gcc.display(),
             output.status
-        ));
+        )
+        .into());
     }
 
     let raw = String::from_utf8_lossy(&output.stdout).trim().to_owned();
@@ -1840,7 +1976,7 @@ fn require_riscv_libgcc_library() -> Result<PathBuf, String> {
 
     Err(format!(
         "MANDREL_ALLOW_LIBGCC_BUILTINS=1 was set, but riscv64-unknown-elf-gcc did not report a usable ABI-specific libgcc.a for -march=rv64imafd -mabi=lp64d. riscv64-unknown-elf-gcc reported: {raw}"
-    ))
+    ).into())
 }
 
 fn is_libgcc_or_link_to_libgcc_archive(path: &Path) -> bool {
@@ -1861,7 +1997,7 @@ fn is_libgcc_archive(path: &Path) -> bool {
 fn prepare_vortex_system_runtime_overrides(
     config: &VortexConfig,
     runtime: &RiscvBuiltinsRuntime,
-) -> Result<(), String> {
+) -> Result<()> {
     let link = config
         .tool_dir
         .join("libcrt64/lib/baremetal/libclang_rt.builtins-riscv64.a");
@@ -1876,7 +2012,7 @@ fn prepare_vortex_system_runtime_overrides(
     Ok(())
 }
 
-fn require_system_programs<const N: usize>(programs: [&str; N]) -> Result<(), String> {
+fn require_system_programs<const N: usize>(programs: [&str; N]) -> Result<()> {
     let missing: Vec<&str> = programs
         .into_iter()
         .filter(|program| find_program_on_path(program).is_none())
@@ -1887,15 +2023,15 @@ fn require_system_programs<const N: usize>(programs: [&str; N]) -> Result<(), St
         Err(format!(
             "missing required system programs for Vortex system mode: {}. Suggested Ubuntu packages: build-essential make python3 gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf clang lld llvm-18-dev; optional full simulation: verilator.",
             missing.join(", ")
-        ))
+        ).into())
     }
 }
 
-fn require_program(program: &str) -> Result<PathBuf, String> {
+fn require_program(program: &str) -> Result<PathBuf> {
     find_program_on_path(program).ok_or_else(|| {
-        format!(
+        XtaskError::message(format!(
             "missing required program '{program}'. Suggested Ubuntu packages: gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf"
-        )
+        ))
     })
 }
 
@@ -1919,7 +2055,7 @@ fn find_llvm_program(program: &str) -> Option<PathBuf> {
         })
 }
 
-fn replace_symlink_or_empty_dir(link: &Path, target: &Path) -> Result<(), String> {
+fn replace_symlink_or_empty_dir(link: &Path, target: &Path) -> Result<()> {
     if let Some(parent) = link
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -1944,23 +2080,20 @@ fn replace_symlink_or_empty_dir(link: &Path, target: &Path) -> Result<(), String
         }
         Ok(_) => fs::remove_file(link)
             .map_err(|error| format!("failed to remove existing '{}': {error}", link.display()))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => {
-            return Err(format!(
-                "failed to inspect existing '{}': {error}",
-                link.display()
-            ));
+            return Err(format!("failed to inspect existing '{}': {error}", link.display()).into());
         }
     }
 
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(target, link).map_err(|error| {
-            format!(
+            XtaskError::message(format!(
                 "failed to create symlink '{}' -> '{}': {error}",
                 link.display(),
                 target.display()
-            )
+            ))
         })
     }
 
@@ -1968,25 +2101,25 @@ fn replace_symlink_or_empty_dir(link: &Path, target: &Path) -> Result<(), String
     {
         if target.is_dir() {
             fs::create_dir_all(link).map_err(|error| {
-                format!(
+                XtaskError::message(format!(
                     "failed to create directory '{}' for '{}': {error}",
                     link.display(),
                     target.display()
-                )
+                ))
             })
         } else {
             fs::copy(target, link).map(|_| ()).map_err(|error| {
-                format!(
+                XtaskError::message(format!(
                     "failed to copy '{}' to '{}': {error}",
                     target.display(),
                     link.display()
-                )
+                ))
             })
         }
     }
 }
 
-fn replace_symlink(link: &Path, target: &Path) -> Result<(), String> {
+fn replace_symlink(link: &Path, target: &Path) -> Result<()> {
     if let Some(parent) = link
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -2005,7 +2138,8 @@ fn replace_symlink(link: &Path, target: &Path) -> Result<(), String> {
                 "cannot replace directory '{}' with symlink to '{}'",
                 link.display(),
                 target.display()
-            ));
+            )
+            .into());
         }
         fs::remove_file(link)
             .map_err(|error| format!("failed to remove existing '{}': {error}", link.display()))?;
@@ -2014,22 +2148,22 @@ fn replace_symlink(link: &Path, target: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(target, link).map_err(|error| {
-            format!(
+            XtaskError::message(format!(
                 "failed to create symlink '{}' -> '{}': {error}",
                 link.display(),
                 target.display()
-            )
+            ))
         })
     }
 
     #[cfg(not(unix))]
     {
         fs::copy(target, link).map(|_| ()).map_err(|error| {
-            format!(
+            XtaskError::message(format!(
                 "failed to copy '{}' to '{}': {error}",
                 target.display(),
                 link.display()
-            )
+            ))
         })
     }
 }
@@ -2052,14 +2186,14 @@ fn non_empty_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn write_and_print_vortex_env(workspace_root: &Path) -> Result<(), String> {
+fn write_and_print_vortex_env(workspace_root: &Path) -> Result<()> {
     let config = VortexConfig::from_env(workspace_root)?;
     write_vortex_env_script(&config)?;
     print_env_usage(&config);
     Ok(())
 }
 
-fn write_vortex_env_script(config: &VortexConfig) -> Result<(), String> {
+fn write_vortex_env_script(config: &VortexConfig) -> Result<()> {
     if let Some(parent) = config
         .env_file
         .parent()
@@ -2136,7 +2270,7 @@ fn vortex_path_export_prefix(config: &VortexConfig) -> String {
     }
 }
 
-fn ensure_download_wrappers(config: &VortexConfig) -> Result<(), String> {
+fn ensure_download_wrappers(config: &VortexConfig) -> Result<()> {
     if config.download_proxy_prefix.is_none() {
         return Ok(());
     }
@@ -2180,11 +2314,7 @@ fn find_program_on_path_excluding(program: &str, excluded_dir: &Path) -> Option<
         .find(|candidate| candidate.is_file() && !candidate.starts_with(excluded_dir))
 }
 
-fn write_download_wrapper(
-    wrapper_dir: &Path,
-    program: &str,
-    real_program: &Path,
-) -> Result<(), String> {
+fn write_download_wrapper(wrapper_dir: &Path, program: &str, real_program: &Path) -> Result<()> {
     let wrapper_path = wrapper_dir.join(program);
     let content = download_wrapper_script(real_program);
     fs::write(&wrapper_path, content).map_err(|error| {
@@ -2227,7 +2357,7 @@ fn download_wrapper_script(real_program: &Path) -> String {
     )
 }
 
-fn make_executable(path: &Path) -> Result<(), String> {
+fn make_executable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -2256,7 +2386,7 @@ fn print_env_usage(config: &VortexConfig) {
     println!("cargo xtask Vortex commands inject this environment automatically.");
 }
 
-fn print_vortex_status(workspace_root: &Path) -> Result<(), String> {
+fn print_vortex_status(workspace_root: &Path) -> Result<()> {
     let config = VortexConfig::from_env(workspace_root)?;
     let status = VortexStatus::probe(&config);
 
@@ -2308,16 +2438,23 @@ fn print_vortex_status(workspace_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn print_demo_matmul_plan() -> Result<(), String> {
-    let plan = demo_matmul_plan()?;
-    print_matmul_plan("Vortex custom-backend matmul plan", &plan)
+fn print_attention_prefill_plan() -> Result<()> {
+    let plan = current_attention_prefill_plan()?;
+    print_attention_plan("Vortex attention-prefill plan", &plan);
+    Ok(())
 }
 
-fn print_matmul_plan(title: &str, plan: &VortexMatmulPlan) -> Result<(), String> {
+fn current_attention_prefill_plan() -> Result<VortexAttentionPrefillPlan> {
+    Ok(compile_vortex_attention_prefill_kernel(
+        AttentionOp::prefill_i8_demo(),
+    )?)
+}
+
+fn print_attention_plan(title: &str, plan: &VortexAttentionPrefillPlan) {
     println!("{title}");
     println!(
-        "shape: M={} N={} K={}",
-        plan.op.shape.m, plan.op.shape.n, plan.op.shape.k
+        "shape: sequence={} head_dim={}",
+        plan.op.shape.sequence, plan.op.shape.head_dim
     );
     println!(
         "kernel: {} ({:?}, {:?}, {:?})",
@@ -2327,8 +2464,12 @@ fn print_matmul_plan(title: &str, plan: &VortexMatmulPlan) -> Result<(), String>
         plan.kernel.availability
     );
     println!(
-        "tile: M={} N={} K={}",
-        plan.schedule.tile.m, plan.schedule.tile.n, plan.schedule.tile.k
+        "tile: query={} key={} head_dim={}",
+        plan.schedule.tile.query, plan.schedule.tile.key, plan.schedule.tile.head_dim
+    );
+    println!(
+        "layout: {:?}, softmax: {:?}",
+        plan.schedule.kv_layout, plan.schedule.softmax
     );
     println!(
         "launch: kernel={} grid=({}, {}, {}) block=({}, {}, {}) shared_memory_bytes={}",
@@ -2366,11 +2507,329 @@ fn print_matmul_plan(title: &str, plan: &VortexMatmulPlan) -> Result<(), String>
             intensity.numerator, intensity.denominator
         );
     }
+}
 
+fn generate_vortex_attention_kernel_source(workspace_root: &Path) -> Result<()> {
+    generate_vortex_attention_artifacts(workspace_root, true).map(|_| ())
+}
+
+fn generate_vortex_attention_artifacts(
+    workspace_root: &Path,
+    print_source: bool,
+) -> Result<VortexMlirKernelArtifacts> {
+    let config = VortexConfig::from_env(workspace_root)?;
+    if config.toolchain_mode == VortexToolchainMode::Skip {
+        reject_obvious_incompatible_prebuilt_tools(&config)?;
+    }
+
+    let plan = current_attention_prefill_plan()?;
+    print_attention_plan("Vortex attention-prefill MLIR dispatch", &plan);
+    match generate_vortex_attention_prefill_mlir(&plan) {
+        Ok(generated) => {
+            println!(
+                "generated kernel: {} ({:?}) format={} ext=.{} headers={:?}",
+                generated.symbol.as_str(),
+                generated.implementation,
+                generated.format.as_str(),
+                generated.format.extension(),
+                generated.required_headers
+            );
+            let artifacts = validate_attention_mlir_with_vortex_llvm(
+                workspace_root,
+                &config,
+                generated.symbol.as_str(),
+                &generated.source,
+            )?;
+            println!(
+                "generated MLIR written to: {}",
+                artifacts.mlir_path.display()
+            );
+            println!(
+                "generated LLVM IR written to: {}",
+                artifacts.ll_path.display()
+            );
+            println!(
+                "generated object written to: {}",
+                artifacts.obj_path.display()
+            );
+            println!("generated ELF written to: {}", artifacts.elf_path.display());
+            println!(
+                "generated vxbin written to: {}",
+                artifacts.vxbin_path.display()
+            );
+            if print_source {
+                println!("{}", generated.source);
+            }
+            Ok(artifacts)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+struct XtaskCommandRunner;
+
+impl VortexCommandRunner for XtaskCommandRunner {
+    fn run(&mut self, phase: &str, command: Command) -> VortexToolchainResult<()> {
+        run_checked(command, phase)
+            .map_err(|error| VortexToolchainError::command_runner(phase, error.to_string()))
+    }
+
+    fn output(&mut self, phase: &str, command: Command) -> VortexToolchainResult<Output> {
+        run_output_checked(command, phase)
+            .map_err(|error| VortexToolchainError::command_runner(phase, error.to_string()))
+    }
+}
+
+fn validate_attention_mlir_with_vortex_llvm(
+    workspace_root: &Path,
+    config: &VortexConfig,
+    symbol_name: &str,
+    source: &str,
+) -> Result<VortexMlirKernelArtifacts> {
+    let artifacts = VortexMlirKernelArtifacts::under_output_dir(
+        &workspace_root.join("target/mandrel/vortex"),
+        symbol_name,
+    );
+    let mut runner = XtaskCommandRunner;
+    build_vortex_mlir_kernel_artifacts(
+        VortexMlirKernelBuildRequest {
+            workspace_root,
+            config,
+            symbol_name,
+            source,
+            artifacts: &artifacts,
+            phase_prefix: "attention",
+        },
+        &mut runner,
+    )?;
+
+    println!("validated LLVM IR: {}", artifacts.ll_path.display());
+    println!("validated object: {}", artifacts.obj_path.display());
+    println!("validated ELF: {}", artifacts.elf_path.display());
+    println!("validated vxbin: {}", artifacts.vxbin_path.display());
+    Ok(artifacts)
+}
+
+fn run_vortex_attention_correctness(workspace_root: &Path) -> Result<()> {
+    let config = VortexConfig::from_env(workspace_root)?;
+    let artifacts = generate_vortex_attention_artifacts(workspace_root, false)?;
+    require_file(&artifacts.vxbin_path, "generated attention vxbin")?;
+    ensure_vortex_runtime_libraries(&config)?;
+    let runtime = preferred_vortex_runtime_library(&config)?;
+
+    println!(
+        "Launching attention runtime correctness through Vortex simx with vxbin: {}",
+        artifacts.vxbin_path.display()
+    );
+    let exe = env::current_exe()
+        .map_err(|error| format!("failed to locate current xtask executable: {error}"))?;
+    let mut command = Command::new(exe);
+    command
+        .current_dir(workspace_root)
+        .arg("__vortex-run-attention-inner")
+        .arg(&artifacts.vxbin_path)
+        .env("VORTEX_DRIVER", "simx")
+        .env("MANDREL_VORTEX_RUNTIME_LIB", &runtime)
+        .env("MANDREL_VORTEX_RUNTIME_TRACE", "1");
+    apply_vortex_env(&mut command, &config)?;
+    run_checked(command, "attention.runtime_correctness")
+}
+
+fn run_vortex_attention_correctness_inner(workspace_root: &Path) -> Result<()> {
+    let vxbin_path = env::args_os()
+        .nth(2)
+        .map(PathBuf::from)
+        .ok_or_else(|| "missing vxbin path for __vortex-run-attention-inner".to_owned())?;
+    require_file(&vxbin_path, "generated attention vxbin")?;
+
+    runtime_step("compiling attention launch plan")?;
+    let plan = current_attention_prefill_plan()?;
+    runtime_step("building deterministic attention input")?;
+    let input = deterministic_attention_prefill_input(&plan)?;
+    runtime_step(&format!(
+        "computing host reference for sequence={} head_dim={}",
+        input.sequence, input.head_dim
+    ))?;
+    let expected = reference_attention_prefill_i8(&input)
+        .map_err(|error| format!("failed to compute host attention reference: {error}"))?;
+
+    let mut runtime_launch = plan.launch;
+    if attention_runtime_flag("MANDREL_ATTENTION_RUNTIME_SCALAR_LAUNCH")? {
+        runtime_step("using scalar launch override: grid=(1,1,1) block=(1,1,1) shared=0")?;
+        runtime_launch.grid.x = 1;
+        runtime_launch.grid.y = 1;
+        runtime_launch.grid.z = 1;
+        runtime_launch.block.x = 1;
+        runtime_launch.block.y = 1;
+        runtime_launch.block.z = 1;
+        runtime_launch.shared_memory_bytes = 0;
+    }
+    runtime_step(&format!(
+        "runtime launch dims grid=({}, {}, {}) block=({}, {}, {}) shared={}",
+        runtime_launch.grid.x,
+        runtime_launch.grid.y,
+        runtime_launch.grid.z,
+        runtime_launch.block.x,
+        runtime_launch.block.y,
+        runtime_launch.block.z,
+        runtime_launch.shared_memory_bytes
+    ))?;
+
+    runtime_step("initializing Vortex backend/runtime")?;
+    let config =
+        VortexBackendConfig::new().with_kernel_artifact(runtime_launch.symbol, &vxbin_path);
+    let mut backend = VortexBackend::new(config)
+        .map_err(|error| format!("failed to initialize Vortex backend runtime: {error}"))?;
+    runtime_step("launching Vortex attention kernel and reading output")?;
+    let actual = backend
+        .run_attention_prefill_i8(&runtime_launch, &input)
+        .map_err(|error| format!("failed to run attention prefill on Vortex: {error}"))?;
+
+    runtime_step("comparing Vortex output against host reference")?;
+    compare_attention_outputs(&expected, &actual.output)?;
+    println!("attention runtime correctness PASSED");
+    println!("  vxbin: {}", vxbin_path.display());
+    println!("  runtime root: {}", workspace_root.display());
+    println!("  sequence: {}", input.sequence);
+    println!("  head_dim: {}", input.head_dim);
+    println!("  query_tile: {}", input.query_tile);
+    println!("  key_tile: {}", input.key_tile);
+    println!("  trace: {:?}", actual.trace);
     Ok(())
 }
 
-fn run_vortex_vecadd(workspace_root: &Path) -> Result<(), String> {
+fn deterministic_attention_prefill_input(
+    plan: &VortexAttentionPrefillPlan,
+) -> Result<AttentionPrefillI8Run> {
+    let default_sequence = plan.op.shape.sequence.min(8);
+    let default_head_dim = plan.op.shape.head_dim.min(16);
+    let sequence_usize = attention_runtime_extent_from_env(
+        "MANDREL_ATTENTION_RUNTIME_SEQUENCE",
+        default_sequence,
+        plan.op.shape.sequence,
+    )?;
+    let head_dim_usize = attention_runtime_extent_from_env(
+        "MANDREL_ATTENTION_RUNTIME_HEAD_DIM",
+        default_head_dim,
+        plan.op.shape.head_dim,
+    )?;
+    let sequence = u32::try_from(sequence_usize)
+        .map_err(|_| format!("attention runtime sequence does not fit u32: {sequence_usize}"))?;
+    let head_dim = u32::try_from(head_dim_usize)
+        .map_err(|_| format!("attention runtime head_dim does not fit u32: {head_dim_usize}"))?;
+    let query_tile = u32::try_from(plan.schedule.tile.query).map_err(|_| {
+        format!(
+            "attention query tile does not fit u32: {}",
+            plan.schedule.tile.query
+        )
+    })?;
+    let key_tile = u32::try_from(plan.schedule.tile.key).map_err(|_| {
+        format!(
+            "attention key tile does not fit u32: {}",
+            plan.schedule.tile.key
+        )
+    })?;
+    let elements = sequence_usize
+        .checked_mul(head_dim_usize)
+        .ok_or_else(|| "attention runtime element count overflow".to_owned())?;
+
+    let q = (0..elements).map(|index| ((index % 5) as i8) - 2).collect();
+    let k = (0..elements)
+        .map(|index| (((index * 3 + 1) % 5) as i8) - 2)
+        .collect();
+    let v = (0..elements)
+        .map(|index| (((index * 7 + 3) % 17) as i8) - 8)
+        .collect();
+
+    Ok(AttentionPrefillI8Run {
+        q,
+        k,
+        v,
+        sequence,
+        head_dim,
+        query_tile,
+        key_tile,
+    })
+}
+
+fn attention_runtime_flag(key: &str) -> Result<bool> {
+    let Some(raw) = non_empty_env(key) else {
+        return Ok(false);
+    };
+    match raw.as_str() {
+        "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON" => Ok(true),
+        "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF" => Ok(false),
+        other => Err(format!(
+            "invalid {key}='{other}': expected one of 1/0, true/false, yes/no, on/off"
+        )
+        .into()),
+    }
+}
+
+fn attention_runtime_extent_from_env(
+    key: &str,
+    default_value: usize,
+    max_value: usize,
+) -> Result<usize> {
+    let Some(raw) = env::var_os(key) else {
+        return Ok(default_value);
+    };
+    let text = raw.to_string_lossy();
+    let value = text
+        .parse::<usize>()
+        .map_err(|error| format!("invalid {key}='{text}': {error}"))?;
+    if value == 0 || value > max_value {
+        return Err(format!(
+            "{key} must be in 1..={max_value} for the current generated launch, got {value}"
+        )
+        .into());
+    }
+    Ok(value)
+}
+
+fn runtime_step(message: &str) -> Result<()> {
+    println!("attention.runtime: {message}");
+    io::stdout().flush().map_err(|error| {
+        XtaskError::message(format!("failed to flush runtime progress output: {error}"))
+    })
+}
+
+fn compare_attention_outputs(expected: &[i8], actual: &[i8]) -> Result<()> {
+    if expected.len() != actual.len() {
+        return Err(format!(
+            "attention output length mismatch: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        )
+        .into());
+    }
+
+    let mut mismatch_count = 0usize;
+    let mut first_mismatches = Vec::new();
+    for (index, (&expected_value, &actual_value)) in expected.iter().zip(actual).enumerate() {
+        if expected_value != actual_value {
+            mismatch_count += 1;
+            if first_mismatches.len() < 16 {
+                first_mismatches.push(format!(
+                    "  index {index}: expected {expected_value}, got {actual_value}"
+                ));
+            }
+        }
+    }
+
+    if mismatch_count == 0 {
+        return Ok(());
+    }
+
+    Err(format!(
+        "attention output mismatch: {mismatch_count}/{} elements differ\n{}",
+        expected.len(),
+        first_mismatches.join("\n")
+    )
+    .into())
+}
+
+fn run_vortex_vecadd(workspace_root: &Path) -> Result<()> {
     let config = VortexConfig::from_env(workspace_root)?;
     if config.toolchain_mode == VortexToolchainMode::System {
         prepare_vortex_system_tools(&config)?;
@@ -2378,9 +2837,9 @@ fn run_vortex_vecadd(workspace_root: &Path) -> Result<(), String> {
     let status = VortexStatus::probe(&config);
     if !status.can_run_blackbox() {
         return Err(format!(
-            "Vortex blackbox script is not available at '{}'; run `cargo vortex-fetch` or `cargo vortex-install` first",
+            "Vortex blackbox script is not available at {}; run `cargo vortex-fetch` or `cargo vortex-install` first",
             config.blackbox_script().display()
-        ));
+        ).into());
     }
 
     let mut command = Command::new(config.blackbox_script());
@@ -2391,680 +2850,8 @@ fn run_vortex_vecadd(workspace_root: &Path) -> Result<(), String> {
     run_checked(command, "vortex.blackbox.vecadd")
 }
 
-fn run_vortex_matmul(workspace_root: &Path) -> Result<(), String> {
-    run_vortex_matmul_smoke(workspace_root, VortexMatmulSmokeKernel::Direct)
-}
-
-fn run_vortex_matmul_tiled(workspace_root: &Path) -> Result<(), String> {
-    run_vortex_matmul_smoke(workspace_root, VortexMatmulSmokeKernel::ExperimentalTiled)
-}
-
-fn run_vortex_matmul_smoke(
-    workspace_root: &Path,
-    kernel_kind: VortexMatmulSmokeKernel,
-) -> Result<(), String> {
-    let config = VortexConfig::from_env(workspace_root)?;
-    if config.toolchain_mode == VortexToolchainMode::System {
-        return Err(
-            "custom Vortex kernels require Vortex-patched LLVM to emit __vx_kentry_* symbols; use `cargo vortex-toolchain-source`, then rerun with MANDREL_VORTEX_TOOLCHAIN_MODE=skip MANDREL_VORTEX_TOOLDIR=external/vortex-source-tools".to_owned(),
-        );
-    }
-    if config.toolchain_mode == VortexToolchainMode::Skip {
-        reject_obvious_incompatible_prebuilt_tools(&config)?;
-    }
-
-    print_vortex_status(workspace_root)?;
-    print_demo_matmul_plan()?;
-    if kernel_kind == VortexMatmulSmokeKernel::ExperimentalTiled {
-        print_matmul_plan("experimental tiled matmul plan", &kernel_kind.plan()?)?;
-    }
-
-    let status = VortexStatus::probe(&config);
-    if !status.can_use_installed_runtime() {
-        return Err(format!(
-            "Vortex installed SDK is not available under '{}'; run `cargo vortex-install` first",
-            config.install_dir().display()
-        ));
-    }
-
-    ensure_vortex_runtime_libraries(&config)?;
-    let artifacts = build_project_vortex_matmul_kernel(workspace_root, &config, kernel_kind)?;
-    run_vortex_matmul_exec_subprocess(&config, &artifacts.kernel_vxbin, kernel_kind)
-}
-
-fn run_vortex_matmul_exec(
-    workspace_root: &Path,
-    kernel_kind: VortexMatmulSmokeKernel,
-) -> Result<(), String> {
-    let kernel_vxbin = env::args().nth(2).map(PathBuf::from).ok_or_else(|| {
-        format!(
-            "usage: cargo xtask {} <kernel.vxbin>",
-            kernel_kind.exec_command()
-        )
-    })?;
-    let config = VortexConfig::from_env(workspace_root)?;
-    let plan = kernel_kind.plan()?;
-    let shape = demo_matmul_shape();
-    let lhs = demo_matmul_lhs(shape)?;
-    let rhs = demo_matmul_rhs(shape)?;
-    let expected = reference_matmul_i8_i32(shape, &lhs, &rhs)?;
-
-    println!(
-        "running project Vortex matmul kernel ({}): {}",
-        kernel_kind.label(),
-        kernel_vxbin.display()
-    );
-    println!("shape: M={} N={} K={}", shape.m, shape.n, shape.k);
-
-    let backend_config =
-        VortexBackendConfig::from_kernel_artifact(plan.launch.symbol, &kernel_vxbin);
-    let mut backend = VortexBackend::load_from_runtime_candidates(
-        backend_config,
-        vortex_runtime_library_candidates(&config),
-    )
-    .map_err(|error| error.to_string())?;
-    let output = backend
-        .mul_mat_i8_i8_i32_with_plan(&plan, shape, &lhs, &rhs)
-        .map_err(|error| error.to_string())?;
-
-    let mismatches = collect_matmul_mismatches(&expected, &output.values, 16);
-    println!(
-        "launch: grid=({}, {}, {}) block=({}, {}, {})",
-        output.launch.grid[0],
-        output.launch.grid[1],
-        output.launch.grid[2],
-        output.launch.block[0],
-        output.launch.block[1],
-        output.launch.block[2]
-    );
-    println!(
-        "trace: kernel={} bytes(lhs={}, rhs={}, out={}) cache(module_hit={}, kernel_hit={})",
-        output.trace.kernel_symbol,
-        output.trace.lhs_bytes,
-        output.trace.rhs_bytes,
-        output.trace.out_bytes,
-        output.trace.module_cache_hit,
-        output.trace.kernel_cache_hit
-    );
-    if let Some(runtime_trace) = output.runtime_trace_summary() {
-        println!(
-            "runtime-trace: h2d={} d2h={} workgroups={} threads_per_workgroup={} shared_memory_bytes={}",
-            runtime_trace.host_to_device_bytes,
-            runtime_trace.device_to_host_bytes,
-            runtime_trace.launch.workgroup_count(),
-            runtime_trace.launch.threads_per_workgroup(),
-            runtime_trace.launch.shared_memory_bytes
-        );
-    }
-    if mismatches.is_empty() {
-        println!("custom Vortex {} matmul PASSED", kernel_kind.label());
-        return Ok(());
-    }
-
-    for mismatch in mismatches {
-        println!(
-            "*** [{}] expected={} actual={}",
-            mismatch.index, mismatch.expected, mismatch.actual
-        );
-    }
-    Err(format!(
-        "custom Vortex {} matmul FAILED",
-        kernel_kind.label()
-    ))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VortexMatmulSmokeKernel {
-    Direct,
-    ExperimentalTiled,
-}
-
-impl VortexMatmulSmokeKernel {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Direct => "direct",
-            Self::ExperimentalTiled => "experimental tiled",
-        }
-    }
-
-    const fn artifact_dir_name(self) -> &'static str {
-        match self {
-            Self::Direct => "matmul_i8_i32",
-            Self::ExperimentalTiled => "matmul_i8_i32_tiled",
-        }
-    }
-
-    const fn exec_command(self) -> &'static str {
-        match self {
-            Self::Direct => "vortex-run-matmul-exec",
-            Self::ExperimentalTiled => "vortex-run-matmul-tiled-exec",
-        }
-    }
-
-    const fn exec_phase(self) -> &'static str {
-        match self {
-            Self::Direct => "vortex.matmul.exec",
-            Self::ExperimentalTiled => "vortex.matmul-tiled.exec",
-        }
-    }
-
-    fn codegen_backend(self) -> Result<VortexMatmulCodegenBackend, String> {
-        match self {
-            Self::Direct => VortexMatmulCodegenBackend::from_env(),
-            Self::ExperimentalTiled => Ok(VortexMatmulCodegenBackend::LlvmIr),
-        }
-    }
-
-    fn plan(self) -> Result<VortexMatmulPlan, String> {
-        match self {
-            Self::Direct => demo_matmul_plan(),
-            Self::ExperimentalTiled => {
-                compile_experimental_vortex_matmul_kernel(MatmulOp::ggml_mul_mat_i8_demo()).map_err(
-                    |error| format!("failed to compile experimental Vortex matmul plan: {error:?}"),
-                )
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VortexMatmulCodegenBackend {
-    Cpp,
-    LlvmIr,
-}
-
-impl VortexMatmulCodegenBackend {
-    fn from_env() -> Result<Self, String> {
-        let raw = env::var("MANDREL_VORTEX_CODEGEN").unwrap_or_else(|_| "cpp".to_owned());
-        match raw.as_str() {
-            "cpp" | "c++" => Ok(Self::Cpp),
-            "llvm-ir" | "llvm_ir" | "ll" => Ok(Self::LlvmIr),
-            other => Err(format!(
-                "unsupported MANDREL_VORTEX_CODEGEN '{other}'; use cpp or llvm-ir"
-            )),
-        }
-    }
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Cpp => "cpp",
-            Self::LlvmIr => "llvm-ir",
-        }
-    }
-
-    const fn compile_phase(self) -> &'static str {
-        match self {
-            Self::Cpp => "vortex.matmul.compile-kernel-cpp",
-            Self::LlvmIr => "vortex.matmul.compile-kernel-llvm-ir",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct VortexMatmulArtifacts {
-    build_dir: PathBuf,
-    generated_src_dir: PathBuf,
-    generated_kernel_cpp: PathBuf,
-    generated_kernel_ll: PathBuf,
-    kernel_o: PathBuf,
-    startup_probe_o: PathBuf,
-    startup_probe_elf: PathBuf,
-    startup_o: PathBuf,
-    kernel_elf: PathBuf,
-    kernel_vxbin: PathBuf,
-    kernel_dump: PathBuf,
-}
-
-impl VortexMatmulArtifacts {
-    fn new(workspace_root: &Path, kernel_kind: VortexMatmulSmokeKernel) -> Self {
-        let build_dir = workspace_root
-            .join("target/vortex")
-            .join(kernel_kind.artifact_dir_name());
-        let generated_src_dir = build_dir.join("generated");
-        Self {
-            generated_kernel_cpp: generated_src_dir.join("kernel.cpp"),
-            generated_kernel_ll: generated_src_dir.join("kernel.ll"),
-            generated_src_dir,
-            kernel_o: build_dir.join("kernel.o"),
-            startup_probe_o: build_dir.join("vx_start.probe.o"),
-            startup_probe_elf: build_dir.join("vx_start.probe.elf"),
-            startup_o: build_dir.join("vx_start.o"),
-            kernel_elf: build_dir.join("kernel.elf"),
-            kernel_vxbin: build_dir.join("kernel.vxbin"),
-            kernel_dump: build_dir.join("kernel.dump"),
-            build_dir,
-        }
-    }
-
-    fn generated_kernel_path(&self, codegen: VortexMatmulCodegenBackend) -> &Path {
-        match codegen {
-            VortexMatmulCodegenBackend::Cpp => &self.generated_kernel_cpp,
-            VortexMatmulCodegenBackend::LlvmIr => &self.generated_kernel_ll,
-        }
-    }
-}
-
-fn write_generated_vortex_matmul_kernel_source(
-    artifacts: &VortexMatmulArtifacts,
-    kernel_kind: VortexMatmulSmokeKernel,
-    codegen: VortexMatmulCodegenBackend,
-) -> Result<VortexMatmulPlan, String> {
-    let plan = kernel_kind.plan()?;
-    let generated = match (kernel_kind, codegen) {
-        (VortexMatmulSmokeKernel::Direct, VortexMatmulCodegenBackend::Cpp) => {
-            generate_vortex_matmul_cpp(&plan)
-        }
-        (VortexMatmulSmokeKernel::Direct, VortexMatmulCodegenBackend::LlvmIr) => {
-            generate_vortex_matmul_llvm_ir(&plan)
-        }
-        (VortexMatmulSmokeKernel::ExperimentalTiled, VortexMatmulCodegenBackend::LlvmIr) => {
-            generate_experimental_vortex_tiled_matmul_llvm_ir(&plan)
-        }
-        (VortexMatmulSmokeKernel::ExperimentalTiled, VortexMatmulCodegenBackend::Cpp) => {
-            return Err("experimental tiled matmul only supports LLVM-IR codegen".to_owned());
-        }
-    }
-    .map_err(|error| format!("failed to generate Vortex matmul kernel source: {error}"))?;
-    fs::create_dir_all(&artifacts.generated_src_dir).map_err(|error| {
-        format!(
-            "failed to create generated Vortex source directory '{}': {error}",
-            artifacts.generated_src_dir.display()
-        )
-    })?;
-    let generated_kernel = artifacts.generated_kernel_path(codegen);
-    fs::write(generated_kernel, &generated.source).map_err(|error| {
-        format!(
-            "failed to write generated Vortex kernel source '{}': {error}",
-            generated_kernel.display()
-        )
-    })?;
-    println!(
-        "generated kernel: {} ({:?}) format={} headers={:?}",
-        generated.symbol.as_str(),
-        generated.implementation,
-        codegen.as_str(),
-        generated.required_headers
-    );
-    Ok(plan)
-}
-
-#[derive(Debug, Clone)]
-struct VortexKernelTools {
-    clangxx: PathBuf,
-    objdump: PathBuf,
-    objcopy: PathBuf,
-    nm: PathBuf,
-}
-
-fn build_project_vortex_matmul_kernel(
-    workspace_root: &Path,
-    config: &VortexConfig,
-    kernel_kind: VortexMatmulSmokeKernel,
-) -> Result<VortexMatmulArtifacts, String> {
-    if config.xlen != 64 {
-        return Err(format!(
-            "custom Vortex matmul currently supports MANDREL_VORTEX_XLEN=64 only; got {}",
-            config.xlen
-        ));
-    }
-
-    let codegen = kernel_kind.codegen_backend()?;
-    let artifacts = VortexMatmulArtifacts::new(workspace_root, kernel_kind);
-    fs::create_dir_all(&artifacts.build_dir).map_err(|error| {
-        format!(
-            "failed to create Vortex matmul artifact directory '{}': {error}",
-            artifacts.build_dir.display()
-        )
-    })?;
-    let plan = write_generated_vortex_matmul_kernel_source(&artifacts, kernel_kind, codegen)?;
-    let generated_kernel = artifacts.generated_kernel_path(codegen);
-
-    let tools = require_vortex_kernel_tools(config)?;
-    let link_inputs = require_vortex_kernel_link_inputs(config)?;
-    let xconfig_flags = vortex_xconfig_flags(config)?;
-    let compile_flags =
-        vortex_kernel_compile_flags(config, &artifacts.generated_src_dir, &xconfig_flags);
-
-    println!(
-        "building project Vortex {} matmul device kernel using {} codegen",
-        kernel_kind.label(),
-        codegen.as_str()
-    );
-    println!("artifact dir: {}", artifacts.build_dir.display());
-    println!("kernel source: {}", generated_kernel.display());
-
-    let mut compile_kernel = Command::new(&tools.clangxx);
-    compile_kernel.args(&compile_flags);
-    if codegen == VortexMatmulCodegenBackend::LlvmIr {
-        compile_kernel.args(["-x", "ir"]);
-    }
-    compile_kernel
-        .arg("-c")
-        .arg(generated_kernel)
-        .arg("-o")
-        .arg(&artifacts.kernel_o);
-    apply_vortex_env(&mut compile_kernel, config)?;
-    run_checked(compile_kernel, codegen.compile_phase())?;
-
-    let startup_src = config.source_dir.join("sw/kernel/src/vx_start.S");
-    let mut compile_probe_startup = Command::new(&tools.clangxx);
-    compile_probe_startup
-        .args(&compile_flags)
-        .args(["-DNEED_GP", "-DNEED_TLS", "-DNEED_INITFINI", "-DKMU_ENABLE"])
-        .arg("-c")
-        .arg(&startup_src)
-        .arg("-o")
-        .arg(&artifacts.startup_probe_o);
-    apply_vortex_env(&mut compile_probe_startup, config)?;
-    run_checked(compile_probe_startup, "vortex.matmul.compile-startup-probe")?;
-
-    link_vortex_kernel_elf(
-        config,
-        &tools,
-        &compile_flags,
-        &link_inputs,
-        &[
-            artifacts.startup_probe_o.clone(),
-            artifacts.kernel_o.clone(),
-        ],
-        &artifacts.startup_probe_elf,
-        "vortex.matmul.link-startup-probe",
-    )?;
-
-    let startup_flags = vortex_kernel_startup_flags(config, &tools, &artifacts.startup_probe_elf)?;
-    let mut compile_final_startup = Command::new(&tools.clangxx);
-    compile_final_startup
-        .args(&compile_flags)
-        .args(startup_flags)
-        .arg("-DKMU_ENABLE")
-        .arg("-c")
-        .arg(&startup_src)
-        .arg("-o")
-        .arg(&artifacts.startup_o);
-    apply_vortex_env(&mut compile_final_startup, config)?;
-    run_checked(compile_final_startup, "vortex.matmul.compile-startup")?;
-
-    link_vortex_kernel_elf(
-        config,
-        &tools,
-        &compile_flags,
-        &link_inputs,
-        &[artifacts.startup_o.clone(), artifacts.kernel_o.clone()],
-        &artifacts.kernel_elf,
-        "vortex.matmul.link-kernel",
-    )?;
-
-    write_vortex_kernel_dump(
-        config,
-        &tools,
-        &artifacts.kernel_elf,
-        &artifacts.kernel_dump,
-    )?;
-    write_vortex_kernel_vxbin(
-        config,
-        &tools,
-        &artifacts.kernel_elf,
-        &artifacts.kernel_vxbin,
-    )?;
-    validate_vortex_matmul_artifacts(&tools, &artifacts, plan.launch.symbol.as_str())?;
-
-    println!("kernel source: {}", generated_kernel.display());
-    println!("kernel ELF:    {}", artifacts.kernel_elf.display());
-    println!("kernel vxbin:  {}", artifacts.kernel_vxbin.display());
-    println!("kernel dump:   {}", artifacts.kernel_dump.display());
-    Ok(artifacts)
-}
-
-#[derive(Debug, Clone)]
-struct VortexKernelLinkInputs {
-    link_script: PathBuf,
-    kernel_archive: PathBuf,
-    libc_dir: PathBuf,
-    builtins_archive: PathBuf,
-}
-
-fn require_vortex_kernel_tools(config: &VortexConfig) -> Result<VortexKernelTools, String> {
-    let llvm_bin = config.tool_dir.join("llvm-vortex/bin");
-    let tools = VortexKernelTools {
-        clangxx: llvm_bin.join("clang++"),
-        objdump: llvm_bin.join("llvm-objdump"),
-        objcopy: llvm_bin.join("llvm-objcopy"),
-        nm: llvm_bin.join("llvm-nm"),
-    };
-    require_file(&tools.clangxx, "Vortex LLVM clang++")?;
-    require_file(&tools.objdump, "Vortex LLVM objdump")?;
-    require_file(&tools.objcopy, "Vortex LLVM objcopy")?;
-    require_file(&tools.nm, "Vortex LLVM nm")?;
-    Ok(tools)
-}
-
-fn require_vortex_kernel_link_inputs(
-    config: &VortexConfig,
-) -> Result<VortexKernelLinkInputs, String> {
-    let kernel_archive = config.build_dir.join("sw/kernel/libvortex2.a");
-    if !kernel_archive.is_file() {
-        build_vortex_kernel_runtime_archive(config)?;
-    }
-    require_file(&kernel_archive, "Vortex vortex2 kernel runtime archive")?;
-
-    let inputs = VortexKernelLinkInputs {
-        link_script: config.source_dir.join("sw/kernel/scripts/link64.ld"),
-        kernel_archive,
-        libc_dir: config.tool_dir.join("libc64/lib"),
-        builtins_archive: config
-            .tool_dir
-            .join("libcrt64/lib/baremetal/libclang_rt.builtins-riscv64.a"),
-    };
-    require_file(&inputs.link_script, "Vortex kernel link script")?;
-    require_file(&inputs.libc_dir.join("libc.a"), "RISC-V bare-metal libc.a")?;
-    require_file(&inputs.libc_dir.join("libm.a"), "RISC-V bare-metal libm.a")?;
-    require_file(
-        &inputs.builtins_archive,
-        "RISC-V compiler-rt builtins archive for Vortex",
-    )?;
-    Ok(inputs)
-}
-
-fn vortex_xconfig_flags(config: &VortexConfig) -> Result<Vec<String>, String> {
-    let gen_config = config.source_dir.join("ci/gen_config.py");
-    require_file(&gen_config, "Vortex gen_config.py")?;
-    let mut command = Command::new("python3");
-    command
-        .arg(&gen_config)
-        .arg(format!(
-            "--config={}",
-            config.source_dir.join("VX_config.toml").display()
-        ))
-        .arg(format!("--cflags=-DVX_CFG_XLEN={}", config.xlen));
-    apply_vortex_env(&mut command, config)?;
-    let output = run_output_checked(command, "vortex.matmul.gen-config")?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.split_whitespace().map(ToOwned::to_owned).collect())
-}
-
-fn vortex_kernel_compile_flags(
-    config: &VortexConfig,
-    kernel_src_dir: &Path,
-    xconfig_flags: &[String],
-) -> Vec<String> {
-    let riscv_toolchain = config.tool_dir.join("riscv64-gnu-toolchain");
-    let riscv_sysroot = riscv_toolchain.join("riscv64-unknown-elf");
-    let mut flags = vec![
-        "--target=riscv64-unknown-elf".to_owned(),
-        format!("--sysroot={}", riscv_sysroot.display()),
-        format!("--gcc-toolchain={}", riscv_toolchain.display()),
-        "-Xclang".to_owned(),
-        "-target-feature".to_owned(),
-        "-Xclang".to_owned(),
-        "+xvortex".to_owned(),
-        "-Xclang".to_owned(),
-        "-target-feature".to_owned(),
-        "-Xclang".to_owned(),
-        "+zicond".to_owned(),
-        "-mllvm".to_owned(),
-        "-disable-loop-idiom-all".to_owned(),
-        "-march=rv64imafd".to_owned(),
-        "-mabi=lp64d".to_owned(),
-        "-std=c++17".to_owned(),
-        "-Wall".to_owned(),
-        "-Wextra".to_owned(),
-        "-Wfatal-errors".to_owned(),
-        "-Werror".to_owned(),
-        "-Wno-unused-command-line-argument".to_owned(),
-        "-O3".to_owned(),
-        "-mcmodel=medany".to_owned(),
-        "-fno-rtti".to_owned(),
-        "-fno-exceptions".to_owned(),
-        "-nostartfiles".to_owned(),
-        "-nostdlib".to_owned(),
-        "-fdata-sections".to_owned(),
-        "-ffunction-sections".to_owned(),
-        format!(
-            "-I{}",
-            config.install_dir().join("kernel/include").display()
-        ),
-        format!(
-            "-I{}",
-            config.source_dir.join("sw/kernel/include").display()
-        ),
-        format!("-I{}", config.source_dir.join("sw").display()),
-        format!("-I{}", config.source_dir.join("hw").display()),
-        format!("-I{}", config.source_dir.join("sw/common").display()),
-        format!("-I{}", kernel_src_dir.display()),
-        "-DNDEBUG".to_owned(),
-        "-D__VORTEX__".to_owned(),
-    ];
-    flags.extend_from_slice(xconfig_flags);
-    flags
-}
-
-fn link_vortex_kernel_elf(
-    config: &VortexConfig,
-    tools: &VortexKernelTools,
-    compile_flags: &[String],
-    inputs: &VortexKernelLinkInputs,
-    objects: &[PathBuf],
-    output: &Path,
-    phase: &str,
-) -> Result<(), String> {
-    let mut command = Command::new(&tools.clangxx);
-    command.args(compile_flags).args(objects).arg(format!(
-        "-Wl,-Bstatic,--gc-sections,-T,{},--defsym=STARTUP_ADDR=0x180000000",
-        inputs.link_script.display()
-    ));
-    command
-        .arg(&inputs.kernel_archive)
-        .arg(format!("-L{}", inputs.libc_dir.display()))
-        .args(["-lm", "-lc"])
-        .arg(&inputs.builtins_archive)
-        .arg("-o")
-        .arg(output);
-    apply_vortex_env(&mut command, config)?;
-    run_checked(command, phase)
-}
-
-fn vortex_kernel_startup_flags(
-    config: &VortexConfig,
-    tools: &VortexKernelTools,
-    probe_elf: &Path,
-) -> Result<Vec<String>, String> {
-    let script = config
-        .source_dir
-        .join("sw/kernel/scripts/kernel_startup.sh");
-    require_file(&script, "Vortex kernel_startup.sh")?;
-    let mut command = Command::new(&script);
-    command.arg(&tools.objdump).arg(probe_elf);
-    apply_vortex_env(&mut command, config)?;
-    let output = run_output_checked(command, "vortex.matmul.startup-flags")?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.split_whitespace().map(ToOwned::to_owned).collect())
-}
-
-fn write_vortex_kernel_dump(
-    config: &VortexConfig,
-    tools: &VortexKernelTools,
-    kernel_elf: &Path,
-    kernel_dump: &Path,
-) -> Result<(), String> {
-    let mut command = Command::new(&tools.objdump);
-    command.arg("-D").arg(kernel_elf);
-    apply_vortex_env(&mut command, config)?;
-    let output = run_output_checked(command, "vortex.matmul.objdump")?;
-    fs::write(kernel_dump, output.stdout).map_err(|error| {
-        format!(
-            "failed to write Vortex kernel dump '{}': {error}",
-            kernel_dump.display()
-        )
-    })
-}
-
-fn write_vortex_kernel_vxbin(
-    config: &VortexConfig,
-    tools: &VortexKernelTools,
-    kernel_elf: &Path,
-    kernel_vxbin: &Path,
-) -> Result<(), String> {
-    let vxbin = config.source_dir.join("sw/kernel/scripts/vxbin.py");
-    require_file(&vxbin, "Vortex vxbin.py")?;
-    let mut command = Command::new("python3");
-    command
-        .env("OBJCOPY", &tools.objcopy)
-        .arg(&vxbin)
-        .arg(kernel_elf)
-        .arg(kernel_vxbin);
-    apply_vortex_env(&mut command, config)?;
-    run_checked(command, "vortex.matmul.vxbin")
-}
-
-fn validate_vortex_matmul_artifacts(
-    tools: &VortexKernelTools,
-    artifacts: &VortexMatmulArtifacts,
-    kernel_symbol: &str,
-) -> Result<(), String> {
-    let output = run_output_checked(
-        {
-            let mut command = Command::new(&tools.nm);
-            command.arg("-an").arg(&artifacts.kernel_elf);
-            command
-        },
-        "vortex.matmul.nm",
-    )?;
-    let symbols = String::from_utf8_lossy(&output.stdout);
-    let kentry_symbol = format!("__vx_kentry_{kernel_symbol}");
-    if !symbols.contains(&kentry_symbol) {
-        return Err(format!(
-            "kernel ELF '{}' does not contain {kentry_symbol}; this usually means the kernel was not compiled with Vortex-patched LLVM",
-            artifacts.kernel_elf.display()
-        ));
-    }
-    if !file_contains_bytes(&artifacts.kernel_vxbin, b"VXSYMTAB")? {
-        return Err(format!(
-            "kernel vxbin '{}' does not contain VXSYMTAB; vx_module_get_kernel cannot resolve {kernel_symbol}",
-            artifacts.kernel_vxbin.display()
-        ));
-    }
-    Ok(())
-}
-
-fn run_vortex_matmul_exec_subprocess(
-    config: &VortexConfig,
-    kernel_vxbin: &Path,
-    kernel_kind: VortexMatmulSmokeKernel,
-) -> Result<(), String> {
-    let executable = env::current_exe()
-        .map_err(|error| format!("failed to resolve current xtask executable: {error}"))?;
-    let runtime_lib = preferred_vortex_runtime_library(config)?;
-    let mut command = Command::new(executable);
-    command
-        .arg(kernel_kind.exec_command())
-        .arg(kernel_vxbin)
-        .env("VORTEX_DRIVER", "simx")
-        .env("MANDREL_VORTEX_RUNTIME_LIB", runtime_lib);
-    apply_vortex_env(&mut command, config)?;
-    run_checked(command, kernel_kind.exec_phase())
-}
-
-fn ensure_vortex_runtime_libraries(config: &VortexConfig) -> Result<(), String> {
+#[allow(dead_code)]
+fn ensure_vortex_runtime_libraries(config: &VortexConfig) -> Result<()> {
     let stub = config.build_dir.join("sw/runtime/libvortex.so");
     if !stub.is_file() {
         let mut make = Command::new("make");
@@ -3095,7 +2882,8 @@ fn ensure_vortex_runtime_libraries(config: &VortexConfig) -> Result<(), String> 
     require_file(&simx_core, "Vortex simx runtime core libsimx.so")
 }
 
-fn preferred_vortex_runtime_library(config: &VortexConfig) -> Result<PathBuf, String> {
+#[allow(dead_code)]
+fn preferred_vortex_runtime_library(config: &VortexConfig) -> Result<PathBuf> {
     for candidate in vortex_runtime_library_candidates(config) {
         if candidate.is_file() {
             return Ok(candidate);
@@ -3108,9 +2896,11 @@ fn preferred_vortex_runtime_library(config: &VortexConfig) -> Result<PathBuf, St
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(", ")
-    ))
+    )
+    .into())
 }
 
+#[allow(dead_code)]
 fn vortex_runtime_library_candidates(config: &VortexConfig) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = env::var_os("MANDREL_VORTEX_RUNTIME_LIB").map(PathBuf::from) {
@@ -3121,95 +2911,23 @@ fn vortex_runtime_library_candidates(config: &VortexConfig) -> Vec<PathBuf> {
     candidates
 }
 
-fn demo_matmul_shape() -> MatmulShape {
-    MatmulShape::new(32, 32, 64)
-}
-
-fn demo_matmul_lhs(shape: MatmulShape) -> Result<Vec<i8>, String> {
-    let len = checked_demo_len(shape.m, shape.k, "lhs")?;
-    (0..len)
-        .map(|index| i8::try_from((index.wrapping_mul(13).wrapping_add(7) % 17) as i16 - 8))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("failed to generate lhs test data: {error}"))
-}
-
-fn demo_matmul_rhs(shape: MatmulShape) -> Result<Vec<i8>, String> {
-    let len = checked_demo_len(shape.k, shape.n, "rhs")?;
-    (0..len)
-        .map(|index| i8::try_from((index.wrapping_mul(5).wrapping_add(3) % 13) as i16 - 6))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("failed to generate rhs test data: {error}"))
-}
-
-fn reference_matmul_i8_i32(shape: MatmulShape, lhs: &[i8], rhs: &[i8]) -> Result<Vec<i32>, String> {
-    let out_len = checked_demo_len(shape.m, shape.n, "out")?;
-    let mut out = vec![0_i32; out_len];
-    let m = usize::try_from(shape.m).map_err(|_| "M does not fit usize".to_owned())?;
-    let n = usize::try_from(shape.n).map_err(|_| "N does not fit usize".to_owned())?;
-    let k = usize::try_from(shape.k).map_err(|_| "K does not fit usize".to_owned())?;
-    for row in 0..m {
-        for col in 0..n {
-            let mut acc = 0_i32;
-            for depth in 0..k {
-                let a = i32::from(lhs[row * k + depth]);
-                let b = i32::from(rhs[depth * n + col]);
-                acc += a * b;
-            }
-            out[row * n + col] = acc;
-        }
-    }
-    Ok(out)
-}
-
-fn checked_demo_len(rows: u32, cols: u32, matrix: &'static str) -> Result<usize, String> {
-    let len = u64::from(rows)
-        .checked_mul(u64::from(cols))
-        .ok_or_else(|| format!("{matrix} matrix length overflow"))?;
-    usize::try_from(len).map_err(|_| format!("{matrix} matrix length does not fit usize"))
-}
-
-#[derive(Debug, Clone, Copy)]
-struct MatmulMismatch {
-    index: usize,
-    expected: i32,
-    actual: i32,
-}
-
-fn collect_matmul_mismatches(
-    expected: &[i32],
-    actual: &[i32],
-    limit: usize,
-) -> Vec<MatmulMismatch> {
-    expected
-        .iter()
-        .zip(actual.iter())
-        .enumerate()
-        .filter_map(|(index, (&expected, &actual))| {
-            (expected != actual).then_some(MatmulMismatch {
-                index,
-                expected,
-                actual,
-            })
-        })
-        .take(limit)
-        .collect()
-}
-
-fn require_file(path: &Path, description: &str) -> Result<(), String> {
+#[allow(dead_code)]
+fn require_file(path: &Path, description: &str) -> Result<()> {
     if path.is_file() {
         Ok(())
     } else {
-        Err(format!("missing {description}: {}", path.display()))
+        Err(format!("missing {description}: {}", path.display()).into())
     }
 }
 
-fn file_contains_bytes(path: &Path, needle: &[u8]) -> Result<bool, String> {
+#[allow(dead_code)]
+fn file_contains_bytes(path: &Path, needle: &[u8]) -> Result<bool> {
     let bytes =
         fs::read(path).map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
     Ok(bytes.windows(needle.len()).any(|window| window == needle))
 }
 
-fn apply_vortex_env(command: &mut Command, config: &VortexConfig) -> Result<(), String> {
+fn apply_vortex_env(command: &mut Command, config: &VortexConfig) -> Result<()> {
     command.env("VORTEX_HOME", &config.source_dir);
     command.env("VORTEX_BUILD_DIR", &config.build_dir);
     command.env("VORTEX_TOOL_DIR", &config.tool_dir);
@@ -3260,11 +2978,11 @@ fn apply_github_proxy_git_env(command: &mut Command, config: &VortexConfig) {
     }
 }
 
-fn prepend_env_path(command: &mut Command, key: &str, path: PathBuf) -> Result<(), String> {
+fn prepend_env_path(command: &mut Command, key: &str, path: PathBuf) -> Result<()> {
     prepend_env_paths(command, key, [path])
 }
 
-fn prepend_env_paths<I>(command: &mut Command, key: &str, paths: I) -> Result<(), String>
+fn prepend_env_paths<I>(command: &mut Command, key: &str, paths: I) -> Result<()>
 where
     I: IntoIterator<Item = PathBuf>,
 {
@@ -3273,56 +2991,64 @@ where
         env_paths.extend(env::split_paths(&existing));
     }
     let joined = env::join_paths(env_paths).map_err(|error| {
-        format!("failed to build {key} for Vortex command environment: {error}")
+        XtaskError::message(format!(
+            "failed to build {key} for Vortex command environment: {error}"
+        ))
     })?;
     command.env(key, joined);
     Ok(())
 }
 
-fn run_checked(mut command: Command, phase: &str) -> Result<(), String> {
+fn run_checked(mut command: Command, phase: &str) -> Result<()> {
     let rendered = render_command(&command);
-    info!(phase, command = %rendered, "running command");
+    let logged = truncate_command_for_log(&rendered);
+    info!(phase, command = %logged, "running command");
     let status = command
         .status()
-        .map_err(|error| format!("failed to spawn {phase}: {error}"))?;
+        .map_err(|source| XtaskError::CommandSpawn {
+            phase: phase.to_owned(),
+            source,
+        })?;
 
     if status.success() {
         info!(phase, status = %status, "command completed");
         Ok(())
     } else {
-        Err(format!(
-            "{phase} failed with status: {status}; command: {rendered}"
-        ))
+        Err(XtaskError::CommandFailed {
+            phase: phase.to_owned(),
+            status,
+            command: rendered,
+        })
     }
 }
 
-fn run_output_checked(mut command: Command, phase: &str) -> Result<std::process::Output, String> {
+fn run_output_checked(mut command: Command, phase: &str) -> Result<Output> {
     let rendered = render_command(&command);
-    info!(phase, command = %rendered, "running command with captured output");
+    let logged = truncate_command_for_log(&rendered);
+    info!(phase, command = %logged, "running command with captured output");
     let output = command
         .output()
-        .map_err(|error| format!("failed to spawn {phase}: {error}"))?;
+        .map_err(|source| XtaskError::CommandSpawn {
+            phase: phase.to_owned(),
+            source,
+        })?;
 
     if output.status.success() {
         info!(phase, status = %output.status, "command completed");
         Ok(output)
     } else {
-        Err(format!(
-            "{phase} failed with status: {}; command: {}; stderr: {}",
-            output.status,
-            rendered,
-            String::from_utf8_lossy(&output.stderr)
-        ))
+        Err(XtaskError::CommandFailedWithStderr {
+            phase: phase.to_owned(),
+            status: output.status,
+            command: rendered,
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
     }
 }
 
-fn run_checked_with_retries<F>(
-    mut make_command: F,
-    phase: &str,
-    attempts: u32,
-) -> Result<(), String>
+fn run_checked_with_retries<F>(mut make_command: F, phase: &str, attempts: u32) -> Result<()>
 where
-    F: FnMut() -> Result<Command, String>,
+    F: FnMut() -> Result<Command>,
 {
     let attempts = attempts.max(1);
     for attempt in 1..=attempts {
@@ -3342,7 +3068,7 @@ where
         }
     }
 
-    Err(format!("{phase} did not run"))
+    Err(XtaskError::message(format!("{phase} did not run")))
 }
 
 fn render_command(command: &Command) -> String {
@@ -3350,6 +3076,24 @@ fn render_command(command: &Command) -> String {
     parts.push(shell_quote_lossy(command.get_program()));
     parts.extend(command.get_args().map(shell_quote_lossy));
     parts.join(" ")
+}
+
+fn truncate_command_for_log(command: &str) -> String {
+    if command.len() <= LOG_COMMAND_MAX_CHARS {
+        return command.to_owned();
+    }
+
+    let end = command
+        .char_indices()
+        .map(|(idx, _)| idx)
+        .take_while(|idx| *idx <= LOG_COMMAND_MAX_CHARS)
+        .last()
+        .unwrap_or(0);
+    format!(
+        "{} ... <truncated: {} chars total>",
+        &command[..end],
+        command.len()
+    )
 }
 
 fn shell_quote_lossy(value: &OsStr) -> String {
@@ -3369,8 +3113,10 @@ fn shell_quote_lossy(value: &OsStr) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        download_wrapper_script, make_executable, shell_quote_lossy, write_riscv_gcc_wrapper,
+        LOG_COMMAND_MAX_CHARS, Result, download_wrapper_script, make_executable, shell_quote_lossy,
+        truncate_command_for_log, write_riscv_gcc_wrapper,
     };
+    use mandrel_vortex_backend::{VortexMlirKernelArtifacts, vortex_kernel_entry_symbol};
     use std::env;
     use std::fs;
     use std::path::Path;
@@ -3378,7 +3124,59 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn download_wrapper_prefixes_vortex_github_asset_url() -> Result<(), String> {
+    fn attention_artifact_paths_follow_kernel_symbol() {
+        let out_dir = Path::new("target/mandrel/vortex");
+        let artifacts =
+            VortexMlirKernelArtifacts::under_output_dir(out_dir, "attention_prefill_i8");
+
+        assert_eq!(
+            artifacts.mlir_path,
+            out_dir.join("attention_prefill_i8.mlir")
+        );
+        assert_eq!(artifacts.ll_path, out_dir.join("attention_prefill_i8.ll"));
+        assert_eq!(artifacts.obj_path, out_dir.join("attention_prefill_i8.o"));
+        assert_eq!(
+            artifacts.startup_probe_elf_path,
+            out_dir.join("attention_prefill_i8.startup_probe.elf")
+        );
+        assert_eq!(
+            artifacts.startup_object_path,
+            out_dir.join("attention_prefill_i8.vx_start.o")
+        );
+        assert_eq!(artifacts.elf_path, out_dir.join("attention_prefill_i8.elf"));
+        assert_eq!(
+            artifacts.vxbin_path,
+            out_dir.join("attention_prefill_i8.vxbin")
+        );
+    }
+
+    #[test]
+    fn command_log_truncation_preserves_short_commands() {
+        let command = "'clang' '-c' 'attention.ll' '-o' 'attention.o'";
+
+        assert_eq!(truncate_command_for_log(command), command);
+    }
+
+    #[test]
+    fn command_log_truncation_marks_long_commands_without_splitting_utf8() {
+        let command = format!("{}🚀{}", "a".repeat(LOG_COMMAND_MAX_CHARS), "b".repeat(32));
+        let truncated = truncate_command_for_log(&command);
+
+        assert!(truncated.contains("<truncated:"));
+        assert!(truncated.ends_with(&format!("{} chars total>", command.len())));
+        assert!(truncated.is_char_boundary(truncated.len()));
+    }
+
+    #[test]
+    fn vortex_kentry_symbol_uses_runtime_lookup_prefix() {
+        assert_eq!(
+            vortex_kernel_entry_symbol("attention_prefill_i8"),
+            "__vx_kentry_attention_prefill_i8"
+        );
+    }
+
+    #[test]
+    fn download_wrapper_prefixes_vortex_github_asset_url() -> Result<()> {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| format!("system clock before UNIX_EPOCH: {error}"))?
@@ -3421,7 +3219,7 @@ mod tests {
             .status()
             .map_err(|error| format!("failed to run wrapper '{}': {error}", wrapper.display()))?;
         if !status.success() {
-            return Err(format!("wrapper exited with status {status}"));
+            return Err(format!("wrapper exited with status {status}").into());
         }
 
         let captured = fs::read_to_string(&captured_args).map_err(|error| {
@@ -3450,7 +3248,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn riscv_gcc_wrapper_replaces_existing_symlink_without_touching_target() -> Result<(), String> {
+    fn riscv_gcc_wrapper_replaces_existing_symlink_without_touching_target() -> Result<()> {
         use std::os::unix::fs::symlink;
 
         let nanos = SystemTime::now()

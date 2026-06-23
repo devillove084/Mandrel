@@ -15,19 +15,6 @@ impl VortexExecutor {
         Self::default()
     }
 
-    pub(crate) fn cached_module_count(&self) -> usize {
-        self.modules.len()
-    }
-
-    pub(crate) fn cached_kernel_count(&self) -> usize {
-        self.kernels.len()
-    }
-
-    pub(crate) fn clear_kernel_cache(&mut self) {
-        self.kernels.clear();
-        self.modules.clear();
-    }
-
     pub(crate) fn ensure_kernel(
         &mut self,
         device: &Device,
@@ -57,7 +44,9 @@ impl VortexExecutor {
             let module = self
                 .modules
                 .get(&module_path)
-                .ok_or(VortexBackendError::Internal("cached module disappeared"))?;
+                .ok_or(VortexBackendError::Internal {
+                    message: "cached module disappeared",
+                })?;
             module.get_kernel(name)?
         };
         self.kernels.insert(key.clone(), kernel);
@@ -69,9 +58,9 @@ impl VortexExecutor {
     }
 
     pub(crate) fn kernel(&self, key: &KernelCacheKey) -> Result<&Kernel> {
-        self.kernels
-            .get(key)
-            .ok_or(VortexBackendError::Internal("cached kernel disappeared"))
+        self.kernels.get(key).ok_or(VortexBackendError::Internal {
+            message: "cached kernel disappeared",
+        })
     }
 }
 
@@ -157,11 +146,11 @@ mod tests {
     fn cache_key_includes_module_path_and_symbol() {
         let lhs = KernelCacheKey {
             module_path: PathBuf::from("a/kernel.vxbin"),
-            name: "matmul_i8_i32".to_owned(),
+            name: "attention_prefill_i8".to_owned(),
         };
         let rhs = KernelCacheKey {
             module_path: PathBuf::from("b/kernel.vxbin"),
-            name: "matmul_i8_i32".to_owned(),
+            name: "attention_prefill_i8".to_owned(),
         };
 
         assert_ne!(lhs, rhs);
@@ -178,7 +167,7 @@ mod tests {
     #[test]
     fn launch_trace_summarizes_transfer_bytes() {
         let dims = VortexLaunchDims::new([8, 8, 1], [4, 4, 1], 0);
-        let trace = VortexLaunchTrace::new("matmul_i8_i32", dims, 4096, 4096, false, false);
+        let trace = VortexLaunchTrace::new("attention_prefill_i8", dims, 4096, 4096, false, false);
 
         assert_eq!(trace.total_transfer_bytes(), Some(8192));
     }

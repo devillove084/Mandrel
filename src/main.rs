@@ -1,23 +1,17 @@
 use core::fmt;
 
-use mandrel_compiler::{VortexMatmulPlan, compile_vortex_matmul_kernel};
-use mandrel_ggml_adapter::{GgmlMulMatRequest, backend_name};
+use mandrel_compiler::{VortexAttentionPrefillPlan, compile_vortex_attention_prefill_kernel};
+use mandrel_ggml_adapter::{GgmlAttentionPrefillRequest, backend_name};
 use mandrel_kernels::reference;
-use mandrel_model_ir::MatmulOp;
+use mandrel_model_ir::{AttentionOp, SoftmaxOp};
 use mandrel_profiler::KernelMetrics;
-use mandrel_runtime::example_vortex_plan;
+use mandrel_runtime::example_attention_vortex_plan;
 use mandrel_vortex_backend::vortex_capabilities;
 
-const M: usize = 2;
-const K: usize = 4;
-const N: usize = 3;
-const LHS_LEN: usize = M * K;
-const RHS_LEN: usize = K * N;
-const OUT_LEN: usize = M * N;
-
-const LHS: [i8; LHS_LEN] = [1, 2, 3, 4, -1, 0, 2, 1];
-const RHS: [i8; RHS_LEN] = [1, 0, 2, -1, 3, 1, 2, 1, 0, 0, -2, 1];
-const EXPECTED: [i32; OUT_LEN] = [5, 1, 8, 3, 0, -1];
+const SOFTMAX_ROWS: usize = 2;
+const SOFTMAX_COLS: usize = 4;
+const SOFTMAX_LEN: usize = SOFTMAX_ROWS * SOFTMAX_COLS;
+const SOFTMAX_INPUT: [f32; SOFTMAX_LEN] = [1.0, 2.0, 3.0, 4.0, -1.0, 0.0, 1.0, 2.0];
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -26,16 +20,13 @@ fn main() {
     match command.as_str() {
         "overview" | "--help" | "-h" => print_overview(),
         "plan" => print_example_runtime_plan(),
-        "compile-plan" | "compile-matmul-plan" => print_compile_matmul_plan(),
-        "ggml-probe" => print_ggml_probe(),
-        "matmul" => {
-            let mode_name = args.next().unwrap_or_else(|| "reference".to_owned());
-            run_matmul_command(&mode_name);
-        }
+        "attention-plan" | "compile-plan" => print_compile_attention_plan(),
+        "attention-probe" | "ggml-probe" => print_attention_probe(),
+        "softmax" => run_softmax_command(),
         other => {
             eprintln!("unknown command: {other}");
             eprintln!(
-                "try: cargo run -- overview | plan | compile-plan | ggml-probe | matmul reference"
+                "try: cargo run -- overview | plan | attention-plan | attention-probe | softmax"
             );
             std::process::exit(2);
         }
@@ -48,66 +39,60 @@ fn print_overview() {
          focused goal:\n\
            - Rust-first RISC-V GPGPU stack co-design\n\
            - primary executable backend target: Vortex simx/RTL path\n\
-           - product route B: custom ggml/Vortex backend, not OpenCL-first\n\
-           - host scalar path is kept only as the correctness reference\n\n\
+           - MLIR-first generated device code\n\
+           - near-term operators: attention prefill, online softmax, reductions, KV layout planning\n\n\
          useful commands:\n\
            cargo run -- plan\n\
-           cargo run -- compile-plan\n\
-           cargo run -- ggml-probe\n\
-           cargo run -- matmul reference\n\
+           cargo run -- attention-plan\n\
+           cargo run -- attention-probe\n\
+           cargo run -- softmax\n\
            cargo vortex-status\n\
-           cargo vortex-install\n\
-           cargo vortex-plan-matmul\n\
-           cargo vortex-run-vecadd\n\
+           cargo vortex-plan-attention\n\
            cargo xtask help"
     );
 }
 
 fn print_example_runtime_plan() {
-    let plan = example_vortex_plan();
-
-    println!("example runtime target: {:?}", plan.target);
-    println!("example command count: {}", plan.command_buffer.len());
-    println!("active RISC-V GPGPU backend target: Vortex simx");
+    let plan = example_attention_vortex_plan();
+    println!("runtime target: {:?}", plan.target);
+    println!("commands: {}", plan.command_buffer.len());
+    println!("plan: {plan:?}");
 }
 
-fn print_compile_matmul_plan() {
-    let op = MatmulOp::ggml_mul_mat_i8_demo();
-    let plan = match compile_vortex_matmul_kernel(op) {
+fn print_compile_attention_plan() {
+    let op = AttentionOp::prefill_i8_demo();
+    let plan = match compile_vortex_attention_prefill_kernel(op) {
         Ok(plan) => plan,
         Err(error) => {
-            eprintln!("failed to compile Vortex matmul plan: {error:?}");
+            eprintln!("failed to compile Vortex attention prefill plan: {error:?}");
             std::process::exit(1);
         }
     };
 
-    print_vortex_matmul_plan(
-        "Vortex custom-backend compile plan for ggml-like MUL_MAT",
-        &plan,
-    );
+    print_vortex_attention_plan("Vortex attention-prefill compile plan", &plan);
 }
 
-fn print_ggml_probe() {
-    let request = GgmlMulMatRequest::i8_i32(32, 32, 64);
+fn print_attention_probe() {
+    let request = GgmlAttentionPrefillRequest::dense_i8(64, 64);
     let caps = vortex_capabilities();
-    let accepted = mandrel_ggml_adapter::can_offload_mul_mat(request, caps);
+    let accepted = mandrel_ggml_adapter::can_offload_attention_prefill(request, caps);
 
-    println!("ggml adapter backend: {}", backend_name());
-    println!("probe op: MUL_MAT i8*i8 -> i32, shape M=32 N=32 K=64");
+    println!("adapter backend: {}", backend_name());
+    println!("probe op: dense attention prefill i8, sequence=64, head_dim=64");
     println!("can offload to Vortex caps: {accepted}");
     if let Some(op) = request.to_model_ir_for(caps) {
         println!(
-            "lowered model-ir matmul: M={} N={} K={}",
-            op.shape.m, op.shape.n, op.shape.k
+            "lowered model-ir attention: sequence={} head_dim={}",
+            op.shape.sequence, op.shape.head_dim
         );
     }
 }
 
-fn print_vortex_matmul_plan(title: &str, plan: &VortexMatmulPlan) {
+fn print_vortex_attention_plan(title: &str, plan: &VortexAttentionPrefillPlan) {
     println!("{title}");
     println!(
-        "shape: M={} N={} K={}",
-        plan.op.shape.m, plan.op.shape.n, plan.op.shape.k
+        "shape: sequence={} head_dim={}",
+        plan.op.shape.sequence, plan.op.shape.head_dim
     );
     println!(
         "kernel: {} ({:?}, {:?})",
@@ -116,8 +101,12 @@ fn print_vortex_matmul_plan(title: &str, plan: &VortexMatmulPlan) {
         plan.kernel.availability
     );
     println!(
-        "tile: M={} N={} K={}",
-        plan.schedule.tile.m, plan.schedule.tile.n, plan.schedule.tile.k
+        "tile: query={} key={} head_dim={}",
+        plan.schedule.tile.query, plan.schedule.tile.key, plan.schedule.tile.head_dim
+    );
+    println!(
+        "layout: {:?}, softmax: {:?}",
+        plan.schedule.kv_layout, plan.schedule.softmax
     );
     println!(
         "launch: kernel={} grid=({}, {}, {}) block=({}, {}, {}) shared_memory_bytes={}",
@@ -131,14 +120,14 @@ fn print_vortex_matmul_plan(title: &str, plan: &VortexMatmulPlan) {
         plan.launch.shared_memory_bytes
     );
     println!("args:");
-    for arg in plan.launch.args {
+    for arg in &plan.launch.args {
         println!("  {}: {:?}", arg.index, arg.value);
     }
-    print_kernel_metrics("metrics", &plan.metrics);
+    print_metrics(plan.metrics);
 }
 
-fn print_kernel_metrics(title: &str, metrics: &KernelMetrics) {
-    println!("{title}:");
+fn print_metrics(metrics: KernelMetrics) {
+    println!("metrics:");
     println!("  logical_macs: {}", metrics.logical_macs);
     println!("  scheduled_macs: {}", metrics.scheduled_macs);
     println!("  kernel_launches: {}", metrics.kernel_launches);
@@ -150,7 +139,7 @@ fn print_kernel_metrics(title: &str, metrics: &KernelMetrics) {
         "  local_memory_bytes_per_workgroup: {}",
         metrics.local_memory_bytes_per_workgroup
     );
-    if let Some(intensity) = (*metrics).operational_intensity() {
+    if let Some(intensity) = metrics.operational_intensity() {
         println!(
             "  operational_intensity_macs_per_byte: {}/{}",
             intensity.numerator, intensity.denominator
@@ -158,103 +147,58 @@ fn print_kernel_metrics(title: &str, metrics: &KernelMetrics) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MatmulMode {
-    Reference,
+#[derive(Debug)]
+struct SoftmaxSmokeReport {
+    op: SoftmaxOp,
+    output: [f32; SOFTMAX_LEN],
 }
 
-impl MatmulMode {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "reference" | "ref" => Some(Self::Reference),
-            _ => None,
-        }
-    }
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Reference => "reference",
-        }
-    }
+#[derive(Debug)]
+enum SoftmaxSmokeError {
+    RowSumMismatch { row: usize, sum: f32 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MatmulSmokeReport {
-    mode: MatmulMode,
-    executed_path: &'static str,
-    m: usize,
-    k: usize,
-    n: usize,
-    output: [i32; OUT_LEN],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MatmulSmokeError {
-    Mismatch {
-        expected: [i32; OUT_LEN],
-        actual: [i32; OUT_LEN],
-    },
-}
-
-impl fmt::Display for MatmulSmokeError {
+impl fmt::Display for SoftmaxSmokeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Mismatch { expected, actual } => write!(
-                formatter,
-                "matmul mismatch: expected {expected:?}, actual {actual:?}"
-            ),
+            Self::RowSumMismatch { row, sum } => {
+                write!(formatter, "softmax row {row} sums to {sum}, expected 1.0")
+            }
         }
     }
 }
 
-impl std::error::Error for MatmulSmokeError {}
+impl std::error::Error for SoftmaxSmokeError {}
 
-fn run_matmul_smoke(mode: MatmulMode) -> Result<MatmulSmokeReport, MatmulSmokeError> {
-    let mut output = [0_i32; OUT_LEN];
-    let executed_path = match mode {
-        MatmulMode::Reference => {
-            reference::matmul_i8_i32(&LHS, &RHS, &mut output, M, K, N);
-            "portable scalar reference kernel"
+fn run_softmax_reference() -> Result<SoftmaxSmokeReport, SoftmaxSmokeError> {
+    let op = SoftmaxOp::row_f32_demo();
+    let mut output = [0.0_f32; SOFTMAX_LEN];
+    reference::row_softmax_f32(&SOFTMAX_INPUT, &mut output, SOFTMAX_ROWS, SOFTMAX_COLS);
+
+    for row in 0..SOFTMAX_ROWS {
+        let start = row * SOFTMAX_COLS;
+        let end = start + SOFTMAX_COLS;
+        let sum: f32 = output[start..end].iter().sum();
+        if (sum - 1.0).abs() > 1.0e-5 {
+            return Err(SoftmaxSmokeError::RowSumMismatch { row, sum });
         }
-    };
-
-    if output != EXPECTED {
-        return Err(MatmulSmokeError::Mismatch {
-            expected: EXPECTED,
-            actual: output,
-        });
     }
 
-    Ok(MatmulSmokeReport {
-        mode,
-        executed_path,
-        m: M,
-        k: K,
-        n: N,
-        output,
-    })
+    Ok(SoftmaxSmokeReport { op, output })
 }
 
-fn run_matmul_command(mode_name: &str) {
-    let Some(mode) = MatmulMode::parse(mode_name) else {
-        eprintln!("unknown matmul mode: {mode_name}");
-        eprintln!("valid modes: reference");
-        std::process::exit(2);
-    };
-
-    match run_matmul_smoke(mode) {
+fn run_softmax_command() {
+    match run_softmax_reference() {
         Ok(report) => {
-            println!("matmul smoke passed");
-            println!("mode: {}", report.mode.as_str());
-            println!("executed path: {}", report.executed_path);
+            println!("row softmax reference passed");
             println!(
-                "shape: {}x{} * {}x{}",
-                report.m, report.k, report.k, report.n
+                "op: rows={} cols={} axis={:?}",
+                report.op.shape.rows, report.op.shape.cols, report.op.axis
             );
             println!("output: {:?}", report.output);
         }
         Err(error) => {
-            eprintln!("matmul smoke failed: {error}");
+            eprintln!("row softmax reference failed: {error}");
             std::process::exit(1);
         }
     }

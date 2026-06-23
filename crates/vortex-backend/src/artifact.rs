@@ -72,30 +72,26 @@ mod tests {
     #[test]
     fn registry_returns_artifact_by_symbol() {
         let registry = VortexArtifactRegistry::new().with_kernel_artifact(
-            KernelSymbol::MatmulI8I32Tiled,
-            "target/vortex/matmul_i8_i32_tiled/kernel.vxbin",
+            KernelSymbol::AttentionPrefillI8,
+            "target/vortex/attention_prefill_i8/kernel.vxbin",
         );
 
         assert_eq!(
-            registry.kernel_artifact(KernelSymbol::MatmulI8I32Tiled),
-            Some(Path::new("target/vortex/matmul_i8_i32_tiled/kernel.vxbin"))
+            registry.kernel_artifact(KernelSymbol::AttentionPrefillI8),
+            Some(Path::new("target/vortex/attention_prefill_i8/kernel.vxbin"))
         );
-        assert!(
-            registry
-                .kernel_artifact(KernelSymbol::MatmulI8I32)
-                .is_none()
-        );
+        assert!(registry.kernel_artifact(KernelSymbol::SoftmaxF32).is_none());
     }
 
     #[test]
     fn inserting_existing_symbol_replaces_path() {
         let mut registry = VortexArtifactRegistry::new();
-        registry.insert_kernel_artifact(KernelSymbol::MatmulI8I32, "old.vxbin");
-        registry.insert_kernel_artifact(KernelSymbol::MatmulI8I32, "new.vxbin");
+        registry.insert_kernel_artifact(KernelSymbol::AttentionPrefillI8, "old.vxbin");
+        registry.insert_kernel_artifact(KernelSymbol::AttentionPrefillI8, "new.vxbin");
 
         assert_eq!(registry.entries().len(), 1);
         assert_eq!(
-            registry.kernel_artifact(KernelSymbol::MatmulI8I32),
+            registry.kernel_artifact(KernelSymbol::AttentionPrefillI8),
             Some(Path::new("new.vxbin"))
         );
     }

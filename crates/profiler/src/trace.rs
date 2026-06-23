@@ -111,10 +111,10 @@ mod tests {
 
     #[test]
     fn summarizes_launch_and_transfer_shape() {
-        let launch = KernelLaunchTrace::new("matmul_i8_i32", [8, 8, 1], [4, 4, 1], 0);
+        let launch = KernelLaunchTrace::new("attention_prefill_i8", [16, 1, 1], [4, 4, 1], 2336);
         let trace = RuntimeTraceSummary::new(launch, 4096, 4096, KernelCounterTrace::empty());
 
-        assert_eq!(trace.launch.workgroup_count(), 64);
+        assert_eq!(trace.launch.workgroup_count(), 16);
         assert_eq!(trace.launch.threads_per_workgroup(), 16);
         assert_eq!(trace.total_transfer_bytes(), 8192);
     }

@@ -5,7 +5,6 @@ use crate::symbol::KernelSymbol;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelDomain {
     Elementwise,
-    Matmul,
     Attention,
     Reduction,
 }
@@ -13,9 +12,7 @@ pub enum KernelDomain {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelImplementation {
     VortexReferenceExample,
-    HandWrittenVortexCpp,
-    GeneratedVortexCpp,
-    GeneratedVortexLlvmIr,
+    GeneratedVortexMlir,
     FutureRustDsl,
 }
 
@@ -33,30 +30,26 @@ impl KernelAvailability {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelSignature {
-    VecAdd {
-        element_type: ElementType,
-    },
-    Matmul {
-        lhs: ElementType,
-        rhs: ElementType,
-        out: ElementType,
-    },
-    AttentionPrefill {
-        element_type: ElementType,
-    },
-    Softmax {
-        element_type: ElementType,
-    },
+    VecAdd { element_type: ElementType },
+    AttentionPrefill { element_type: ElementType },
+    Softmax { element_type: ElementType },
 }
 
 impl KernelSignature {
-    pub const fn is_matmul_i8_i8_i32(self) -> bool {
+    pub const fn is_attention_prefill_i8(self) -> bool {
         matches!(
             self,
-            Self::Matmul {
-                lhs: ElementType::I8,
-                rhs: ElementType::I8,
-                out: ElementType::I32,
+            Self::AttentionPrefill {
+                element_type: ElementType::I8,
+            }
+        )
+    }
+
+    pub const fn is_softmax_f32(self) -> bool {
+        matches!(
+            self,
+            Self::Softmax {
+                element_type: ElementType::F32,
             }
         )
     }
@@ -97,8 +90,8 @@ impl KernelSpec {
 ///
 /// `Available` means the project has a concrete backend path for the symbol today. `Planned`
 /// entries are intentionally visible so the compiler/scheduler can reason about future lowering
-/// work without accidentally selecting an unavailable kernel.
-pub const VORTEX_KERNEL_CATALOG: [KernelSpec; 5] = [
+/// work without accidentally claiming an executable kernel.
+pub const VORTEX_KERNEL_CATALOG: [KernelSpec; 3] = [
     KernelSpec::new(
         KernelSymbol::VecAddF32,
         KernelDomain::Elementwise,
@@ -109,31 +102,9 @@ pub const VORTEX_KERNEL_CATALOG: [KernelSpec; 5] = [
         },
     ),
     KernelSpec::new(
-        KernelSymbol::MatmulI8I32,
-        KernelDomain::Matmul,
-        KernelImplementation::GeneratedVortexCpp,
-        KernelAvailability::Available,
-        KernelSignature::Matmul {
-            lhs: ElementType::I8,
-            rhs: ElementType::I8,
-            out: ElementType::I32,
-        },
-    ),
-    KernelSpec::new(
-        KernelSymbol::MatmulI8I32Tiled,
-        KernelDomain::Matmul,
-        KernelImplementation::GeneratedVortexLlvmIr,
-        KernelAvailability::Planned,
-        KernelSignature::Matmul {
-            lhs: ElementType::I8,
-            rhs: ElementType::I8,
-            out: ElementType::I32,
-        },
-    ),
-    KernelSpec::new(
         KernelSymbol::AttentionPrefillI8,
         KernelDomain::Attention,
-        KernelImplementation::GeneratedVortexCpp,
+        KernelImplementation::GeneratedVortexMlir,
         KernelAvailability::Planned,
         KernelSignature::AttentionPrefill {
             element_type: ElementType::I8,
@@ -142,7 +113,7 @@ pub const VORTEX_KERNEL_CATALOG: [KernelSpec; 5] = [
     KernelSpec::new(
         KernelSymbol::SoftmaxF32,
         KernelDomain::Reduction,
-        KernelImplementation::GeneratedVortexCpp,
+        KernelImplementation::GeneratedVortexMlir,
         KernelAvailability::Planned,
         KernelSignature::Softmax {
             element_type: ElementType::F32,
@@ -171,53 +142,45 @@ pub fn available_kernel(symbol: KernelSymbol) -> Option<KernelSpec> {
     }
 }
 
-pub fn first_available_matmul_i8_i8_i32() -> Option<KernelSpec> {
-    let mut index = 0;
-    while index < VORTEX_KERNEL_CATALOG.len() {
-        let spec = VORTEX_KERNEL_CATALOG[index];
-        if spec.is_available() && spec.signature.is_matmul_i8_i8_i32() {
-            return Some(spec);
-        }
-        index += 1;
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        KernelAvailability, KernelImplementation, KernelSignature, KernelSymbol, available_kernel,
-        first_available_matmul_i8_i8_i32, kernel_spec,
+        KernelAvailability, KernelImplementation, KernelSymbol, available_kernel, kernel_spec,
     };
 
     #[test]
-    fn catalog_marks_current_matmul_available_and_tiled_planned() {
-        let direct = match available_kernel(KernelSymbol::MatmulI8I32) {
+    fn catalog_marks_attention_and_softmax_as_planned_mlir_kernels() {
+        let attention = match kernel_spec(KernelSymbol::AttentionPrefillI8) {
             Some(spec) => spec,
-            None => panic!("expected current matmul kernel to be available"),
+            None => panic!("expected planned attention prefill spec"),
         };
-        let tiled = match kernel_spec(KernelSymbol::MatmulI8I32Tiled) {
+        let softmax = match kernel_spec(KernelSymbol::SoftmaxF32) {
             Some(spec) => spec,
-            None => panic!("expected planned tiled matmul spec"),
+            None => panic!("expected planned softmax spec"),
         };
 
-        assert!(direct.signature.is_matmul_i8_i8_i32());
+        assert!(attention.signature.is_attention_prefill_i8());
+        assert!(softmax.signature.is_softmax_f32());
         assert_eq!(
-            tiled.implementation,
-            KernelImplementation::GeneratedVortexLlvmIr
+            attention.implementation,
+            KernelImplementation::GeneratedVortexMlir
         );
-        assert_eq!(tiled.availability, KernelAvailability::Planned);
-        assert!(available_kernel(KernelSymbol::MatmulI8I32Tiled).is_none());
+        assert_eq!(
+            softmax.implementation,
+            KernelImplementation::GeneratedVortexMlir
+        );
+        assert_eq!(attention.availability, KernelAvailability::Planned);
+        assert!(available_kernel(KernelSymbol::AttentionPrefillI8).is_none());
     }
 
     #[test]
-    fn finds_first_available_i8_matmul() {
-        let spec = match first_available_matmul_i8_i8_i32() {
+    fn vecadd_remains_an_available_sdk_reference_symbol() {
+        let spec = match available_kernel(KernelSymbol::VecAddF32) {
             Some(spec) => spec,
-            None => panic!("expected available i8 matmul"),
+            None => panic!("expected vecadd SDK example to be available"),
         };
 
-        assert_eq!(spec.symbol, KernelSymbol::MatmulI8I32);
-        assert!(matches!(spec.signature, KernelSignature::Matmul { .. }));
+        assert_eq!(spec.symbol, KernelSymbol::VecAddF32);
+        assert_eq!(spec.availability, KernelAvailability::Available);
     }
 }
