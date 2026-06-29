@@ -1,6 +1,8 @@
 use mandrel_kernel_ir::{KernelImplementation, KernelSymbol};
 use snafu::Snafu;
 
+use crate::attention_plan::AttentionPlanValidationError;
+
 pub mod attention_mlir;
 pub mod device_ir;
 pub mod kernel;
@@ -38,7 +40,7 @@ pub struct GeneratedVortexKernelSource {
     pub required_headers: &'static [&'static str],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Clone, PartialEq, Eq, Snafu)]
 pub enum VortexCodegenError {
     #[snafu(display("unsupported Vortex codegen kernel: {}", symbol.as_str()))]
     UnsupportedKernel { symbol: KernelSymbol },
@@ -51,5 +53,9 @@ pub enum VortexCodegenError {
     UnsupportedSchedule {
         symbol: KernelSymbol,
         reason: &'static str,
+    },
+    #[snafu(display("invalid Vortex attention codegen plan: {source}"))]
+    InvalidAttentionPlan {
+        source: AttentionPlanValidationError,
     },
 }

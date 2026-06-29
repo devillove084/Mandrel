@@ -11,8 +11,11 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
+clap = { workspace = true }
 mandrel-compiler = { workspace = true }
 mandrel-model-ir = { workspace = true }
+mandrel-profiler = { workspace = true }
+mandrel-runtime = { workspace = true, features = ["std"] }
 mandrel-vortex-backend = { workspace = true }
 snafu = { workspace = true, features = ["std"] }
 tracing = { workspace = true }

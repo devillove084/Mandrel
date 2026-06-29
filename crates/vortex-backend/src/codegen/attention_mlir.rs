@@ -2,6 +2,7 @@ use mandrel_compiler::VortexAttentionPrefillPlan;
 use mandrel_kernel_ir::{KernelImplementation, KernelSymbol};
 use mandrel_schedule::{AttentionKvLayout, AttentionPrefillSchedule, AttentionSoftmaxStrategy};
 
+use crate::attention_plan::validate_attention_prefill_i8_plan_abi;
 use crate::codegen::device_ir::{
     CastKind, FcmpPredicate, IcmpPredicate, LlvmType, PhiIncoming, VortexBinaryOp, VortexBlock,
     VortexDeviceModule, VortexFloatBinaryOp, VortexFloatUnaryIntrinsic, VortexKernelFunction,
@@ -53,6 +54,8 @@ fn validate_attention_prefill_i8_plan(
             reason: "attention prefill MLIR lowering currently supports only dense contiguous Q/K/V/O layout",
         });
     }
+    validate_attention_prefill_i8_plan_abi(plan)
+        .map_err(|source| VortexCodegenError::InvalidAttentionPlan { source })?;
     if !matches!(
         plan.schedule.softmax,
         AttentionSoftmaxStrategy::OnlineMaxSum
@@ -799,11 +802,12 @@ fn emit_i8_matrix_store(
 #[cfg(test)]
 mod tests {
     use super::generate_vortex_attention_prefill_mlir;
-    use mandrel_compiler::compile_vortex_attention_prefill_kernel;
+    use mandrel_compiler::{AttentionKvCacheMetadata, compile_vortex_attention_prefill_kernel};
     use mandrel_kernel_ir::{KernelImplementation, KernelSymbol};
     use mandrel_model_ir::AttentionOp;
+    use mandrel_schedule::Layout2D;
 
-    use crate::codegen::GeneratedVortexSourceFormat;
+    use crate::codegen::{GeneratedVortexSourceFormat, VortexCodegenError};
 
     #[test]
     fn generates_attention_prefill_mlir_from_compiler_plan() {
@@ -844,5 +848,30 @@ mod tests {
         assert!(generated.source.contains("llvm.intr.exp"));
         assert!(generated.source.contains("llvm.fptosi"));
         assert!(generated.source.contains("llvm.store %out_i8"));
+    }
+
+    #[test]
+    fn rejects_paged_kv_metadata_before_mlir_generation() {
+        let mut plan = match compile_vortex_attention_prefill_kernel(AttentionOp::prefill_i8_demo())
+        {
+            Ok(plan) => plan,
+            Err(error) => panic!("unexpected compile error: {error:?}"),
+        };
+        plan.metadata.kv_cache = AttentionKvCacheMetadata::Paged {
+            page_size: 16,
+            logical_key: Layout2D::row_major(64, 64),
+            logical_value: Layout2D::row_major(64, 64),
+        };
+
+        let error = match generate_vortex_attention_prefill_mlir(&plan) {
+            Ok(_) => panic!("expected paged KV metadata to be rejected"),
+            Err(error) => error,
+        };
+        match error {
+            VortexCodegenError::InvalidAttentionPlan { source } => {
+                assert!(source.to_string().contains("paged KV cache metadata"));
+            }
+            other => panic!("unexpected codegen error: {other}"),
+        }
     }
 }

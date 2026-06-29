@@ -1,10 +1,10 @@
 use mandrel_core::ElementType;
 use mandrel_kernel_ir::{Dim3, KernelArg, KernelLaunch, KernelSymbol, kernel_spec};
-use mandrel_model_ir::{AttentionOp, TargetConstraints};
+use mandrel_model_ir::{AttentionOp, Quantization, TargetConstraints};
 use mandrel_profiler::{AttentionPrefillEstimateInput, estimate_gpu_attention_prefill};
 use mandrel_schedule::{
-    AttentionKernelKind, AttentionPrefillSchedule, AttentionPrefillScheduleSelection,
-    select_vortex_attention_prefill_schedule,
+    AttentionKernelKind, AttentionKvLayout, AttentionPrefillSchedule,
+    AttentionPrefillScheduleSelection, Layout2D, select_vortex_attention_prefill_schedule,
 };
 
 use crate::plan::{CompileError, VortexKernelPlan, usize_to_u32};
@@ -14,9 +14,82 @@ pub const VORTEX_ATTENTION_Q_BUFFER: u32 = 0;
 pub const VORTEX_ATTENTION_K_BUFFER: u32 = 1;
 pub const VORTEX_ATTENTION_V_BUFFER: u32 = 2;
 pub const VORTEX_ATTENTION_OUT_BUFFER: u32 = 3;
+pub const VORTEX_ATTENTION_SEQUENCE_ARG: u32 = 4;
+pub const VORTEX_ATTENTION_HEAD_DIM_ARG: u32 = 5;
+pub const VORTEX_ATTENTION_QUERY_TILE_ARG: u32 = 6;
+pub const VORTEX_ATTENTION_KEY_TILE_ARG: u32 = 7;
 
-pub type VortexAttentionPrefillPlan =
-    VortexKernelPlan<AttentionOp, AttentionPrefillSchedule, VORTEX_ATTENTION_PREFILL_ARG_COUNT>;
+pub type VortexAttentionPrefillPlan = VortexKernelPlan<
+    AttentionOp,
+    AttentionPrefillSchedule,
+    AttentionPrefillPlanMetadata,
+    VORTEX_ATTENTION_PREFILL_ARG_COUNT,
+>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionPrefillBufferRole {
+    Query,
+    Key,
+    Value,
+    Output,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttentionPrefillBufferMetadata {
+    pub role: AttentionPrefillBufferRole,
+    pub arg_index: u32,
+    pub buffer_slot: u32,
+    pub element_type: ElementType,
+    pub layout: Layout2D,
+    pub quantization: Option<Quantization>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttentionPrefillScalarMetadata {
+    pub sequence_arg_index: u32,
+    pub head_dim_arg_index: u32,
+    pub query_tile_arg_index: u32,
+    pub key_tile_arg_index: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionKvCacheMetadata {
+    DenseContiguous {
+        key: Layout2D,
+        value: Layout2D,
+    },
+    Paged {
+        page_size: usize,
+        logical_key: Layout2D,
+        logical_value: Layout2D,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionRuntimeShapePolicyKind {
+    PrefixWithinCompiledShape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttentionRuntimeShapePolicy {
+    pub kind: AttentionRuntimeShapePolicyKind,
+    pub compiled_sequence: usize,
+    pub compiled_head_dim: usize,
+    pub default_runtime_sequence: usize,
+    pub default_runtime_head_dim: usize,
+    pub query_tile: usize,
+    pub key_tile: usize,
+    pub head_dim_tile: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttentionPrefillPlanMetadata {
+    pub arg_count: usize,
+    pub buffers: [AttentionPrefillBufferMetadata; 4],
+    pub scalars: AttentionPrefillScalarMetadata,
+    pub kv_cache: AttentionKvCacheMetadata,
+    pub runtime_shape: AttentionRuntimeShapePolicy,
+}
 
 pub fn compile_vortex_attention_prefill_kernel(
     op: AttentionOp,
@@ -68,10 +141,12 @@ fn compile_selected_vortex_attention_prefill_kernel(
     let head_dim = usize_to_u32(op.shape.head_dim)?;
     let query_tile = usize_to_u32(schedule.tile.query)?;
     let key_tile = usize_to_u32(schedule.tile.key)?;
+    let metadata = attention_prefill_plan_metadata(op, schedule);
 
     Ok(VortexKernelPlan {
         op,
         schedule,
+        metadata,
         kernel,
         launch: KernelLaunch::new(
             symbol,
@@ -99,12 +174,92 @@ pub const fn attention_kernel_symbol(kind: AttentionKernelKind) -> KernelSymbol 
     }
 }
 
+fn attention_prefill_plan_metadata(
+    op: AttentionOp,
+    schedule: AttentionPrefillSchedule,
+) -> AttentionPrefillPlanMetadata {
+    let logical_layout = Layout2D::row_major(op.shape.sequence, op.shape.head_dim);
+    let unit_i8_quantization = Some(Quantization::symmetric_unit());
+    let buffers = [
+        AttentionPrefillBufferMetadata {
+            role: AttentionPrefillBufferRole::Query,
+            arg_index: 0,
+            buffer_slot: VORTEX_ATTENTION_Q_BUFFER,
+            element_type: op.element_type,
+            layout: logical_layout,
+            quantization: unit_i8_quantization,
+        },
+        AttentionPrefillBufferMetadata {
+            role: AttentionPrefillBufferRole::Key,
+            arg_index: 1,
+            buffer_slot: VORTEX_ATTENTION_K_BUFFER,
+            element_type: op.element_type,
+            layout: logical_layout,
+            quantization: unit_i8_quantization,
+        },
+        AttentionPrefillBufferMetadata {
+            role: AttentionPrefillBufferRole::Value,
+            arg_index: 2,
+            buffer_slot: VORTEX_ATTENTION_V_BUFFER,
+            element_type: op.element_type,
+            layout: logical_layout,
+            quantization: unit_i8_quantization,
+        },
+        AttentionPrefillBufferMetadata {
+            role: AttentionPrefillBufferRole::Output,
+            arg_index: 3,
+            buffer_slot: VORTEX_ATTENTION_OUT_BUFFER,
+            element_type: op.element_type,
+            layout: logical_layout,
+            quantization: unit_i8_quantization,
+        },
+    ];
+    let kv_cache = match schedule.kv_layout {
+        AttentionKvLayout::DenseContiguous => AttentionKvCacheMetadata::DenseContiguous {
+            key: logical_layout,
+            value: logical_layout,
+        },
+        AttentionKvLayout::Paged { page_size } => AttentionKvCacheMetadata::Paged {
+            page_size,
+            logical_key: logical_layout,
+            logical_value: logical_layout,
+        },
+    };
+
+    AttentionPrefillPlanMetadata {
+        arg_count: VORTEX_ATTENTION_PREFILL_ARG_COUNT,
+        buffers,
+        scalars: AttentionPrefillScalarMetadata {
+            sequence_arg_index: VORTEX_ATTENTION_SEQUENCE_ARG,
+            head_dim_arg_index: VORTEX_ATTENTION_HEAD_DIM_ARG,
+            query_tile_arg_index: VORTEX_ATTENTION_QUERY_TILE_ARG,
+            key_tile_arg_index: VORTEX_ATTENTION_KEY_TILE_ARG,
+        },
+        kv_cache,
+        runtime_shape: AttentionRuntimeShapePolicy {
+            kind: AttentionRuntimeShapePolicyKind::PrefixWithinCompiledShape,
+            compiled_sequence: op.shape.sequence,
+            compiled_head_dim: op.shape.head_dim,
+            default_runtime_sequence: op.shape.sequence.min(8),
+            default_runtime_head_dim: op.shape.head_dim.min(16),
+            query_tile: schedule.tile.query,
+            key_tile: schedule.tile.key,
+            head_dim_tile: schedule.tile.head_dim,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{attention_kernel_symbol, compile_vortex_attention_prefill_kernel};
+    use super::{
+        AttentionKvCacheMetadata, AttentionPrefillBufferRole, AttentionRuntimeShapePolicyKind,
+        VORTEX_ATTENTION_HEAD_DIM_ARG, VORTEX_ATTENTION_KEY_TILE_ARG,
+        VORTEX_ATTENTION_QUERY_TILE_ARG, VORTEX_ATTENTION_SEQUENCE_ARG, attention_kernel_symbol,
+        compile_vortex_attention_prefill_kernel,
+    };
     use mandrel_kernel_ir::{KernelArgValue, KernelAvailability, KernelSymbol};
-    use mandrel_model_ir::AttentionOp;
-    use mandrel_schedule::AttentionKernelKind;
+    use mandrel_model_ir::{AttentionOp, Quantization};
+    use mandrel_schedule::{AttentionKernelKind, Layout2D};
 
     #[test]
     fn compiles_demo_to_planned_attention_prefill_launch() {
@@ -124,6 +279,48 @@ mod tests {
         assert_eq!(plan.launch.args[6].value, KernelArgValue::U32(4));
         assert_eq!(plan.launch.args[7].value, KernelArgValue::U32(16));
         assert_eq!(plan.metrics.workgroup_count, 16);
+
+        assert_eq!(plan.metadata.arg_count, 8);
+        assert_eq!(
+            plan.metadata.scalars.sequence_arg_index,
+            VORTEX_ATTENTION_SEQUENCE_ARG
+        );
+        assert_eq!(
+            plan.metadata.scalars.head_dim_arg_index,
+            VORTEX_ATTENTION_HEAD_DIM_ARG
+        );
+        assert_eq!(
+            plan.metadata.scalars.query_tile_arg_index,
+            VORTEX_ATTENTION_QUERY_TILE_ARG
+        );
+        assert_eq!(
+            plan.metadata.scalars.key_tile_arg_index,
+            VORTEX_ATTENTION_KEY_TILE_ARG
+        );
+        assert_eq!(
+            plan.metadata.buffers[0].role,
+            AttentionPrefillBufferRole::Query
+        );
+        assert_eq!(plan.metadata.buffers[0].arg_index, 0);
+        assert_eq!(plan.metadata.buffers[0].buffer_slot, 0);
+        assert_eq!(plan.metadata.buffers[0].layout, Layout2D::row_major(64, 64));
+        assert_eq!(
+            plan.metadata.buffers[0].quantization,
+            Some(Quantization::symmetric_unit())
+        );
+        assert_eq!(
+            plan.metadata.kv_cache,
+            AttentionKvCacheMetadata::DenseContiguous {
+                key: Layout2D::row_major(64, 64),
+                value: Layout2D::row_major(64, 64)
+            }
+        );
+        assert_eq!(
+            plan.metadata.runtime_shape.kind,
+            AttentionRuntimeShapePolicyKind::PrefixWithinCompiledShape
+        );
+        assert_eq!(plan.metadata.runtime_shape.default_runtime_sequence, 8);
+        assert_eq!(plan.metadata.runtime_shape.default_runtime_head_dim, 16);
     }
 
     #[test]

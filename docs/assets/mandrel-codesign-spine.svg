@@ -1,0 +1,159 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Mandrel workload-driven full-stack codesign spine</title>
+  <desc id="desc">A polished architecture diagram showing Mandrel as a workload-driven full-stack codesign lab for open AI accelerators, with an executable attention spine from LLM serving workload through compiler, Vortex runtime, correctness, trace evidence, and codesign feedback.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="720" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0B1020"/>
+      <stop offset="0.52" stop-color="#101A35"/>
+      <stop offset="1" stop-color="#061B2A"/>
+    </linearGradient>
+    <radialGradient id="haloA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(224 118) rotate(38) scale(540 350)">
+      <stop stop-color="#7C3AED" stop-opacity="0.48"/>
+      <stop offset="1" stop-color="#7C3AED" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="haloB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1045 592) rotate(149) scale(620 360)">
+      <stop stop-color="#06B6D4" stop-opacity="0.36"/>
+      <stop offset="1" stop-color="#06B6D4" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="card" x1="120" y1="108" x2="1160" y2="640" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#151F3B" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#0A2635" stop-opacity="0.92"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="176" y1="132" x2="1080" y2="132" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A78BFA"/>
+      <stop offset="0.5" stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#34D399"/>
+    </linearGradient>
+    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#FDBA74"/>
+      <stop offset="1" stop-color="#FB7185"/>
+    </linearGradient>
+    <linearGradient id="purple" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#C4B5FD"/>
+      <stop offset="1" stop-color="#818CF8"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#86EFAC"/>
+      <stop offset="1" stop-color="#2DD4BF"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.36"/>
+    </filter>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="150%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#000000" flood-opacity="0.26"/>
+    </filter>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M2 2L10 7L2 12" stroke="#93C5FD" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M2 2L10 7L2 12" stroke="#5EEAD4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    </marker>
+    <style>
+      .title { font: 800 48px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #F8FAFC; letter-spacing: -1.4px; }
+      .subtitle { font: 500 18px Inter, ui-sans-serif, system-ui, sans-serif; fill: #C7D2FE; }
+      .tag { font: 700 13px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: 1.7px; text-transform: uppercase; fill: #A7F3D0; }
+      .nodeTitle { font: 800 21px Inter, ui-sans-serif, system-ui, sans-serif; fill: #F8FAFC; }
+      .nodeText { font: 500 14px Inter, ui-sans-serif, system-ui, sans-serif; fill: #CBD5E1; }
+      .small { font: 600 12px Inter, ui-sans-serif, system-ui, sans-serif; fill: #94A3B8; }
+      .metric { font: 800 22px Inter, ui-sans-serif, system-ui, sans-serif; fill: #E0F2FE; }
+      .metricLabel { font: 600 12px Inter, ui-sans-serif, system-ui, sans-serif; fill: #BAE6FD; }
+      .laneTitle { font: 800 15px Inter, ui-sans-serif, system-ui, sans-serif; fill: #E2E8F0; letter-spacing: .2px; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="720" rx="0" fill="url(#bg)"/>
+  <rect width="1280" height="720" fill="url(#haloA)"/>
+  <rect width="1280" height="720" fill="url(#haloB)"/>
+  <path d="M76 590C222 514 305 650 462 581C620 512 606 395 770 345C922 298 1012 372 1196 285" stroke="#38BDF8" stroke-opacity="0.12" stroke-width="2"/>
+  <path d="M82 126C220 180 306 88 453 164C600 240 634 158 764 183C916 212 1004 288 1194 214" stroke="#A78BFA" stroke-opacity="0.14" stroke-width="2"/>
+
+  <rect x="74" y="56" width="1132" height="612" rx="34" fill="url(#card)" stroke="#334155" stroke-opacity="0.86" filter="url(#shadow)"/>
+  <rect x="122" y="110" width="1036" height="4" rx="2" fill="url(#accent)"/>
+
+  <text x="122" y="168" class="tag">Mandrel</text>
+  <text x="122" y="222" class="title">Workload-driven codesign lab</text>
+  <text x="122" y="256" class="subtitle">LLM serving workloads drive chip, memory, runtime, compiler, and kernel decisions on open RISC-V/Vortex-like hardware.</text>
+
+  <g opacity="0.95">
+    <rect x="930" y="138" width="228" height="106" rx="22" fill="#071827" stroke="#164E63"/>
+    <text x="955" y="174" class="metric">attention_prefill_i8</text>
+    <text x="955" y="200" class="metricLabel">current executable spine</text>
+    <text x="955" y="224" class="small">correctness + trace + JSONL history</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="126" y="324" width="214" height="138" rx="24" fill="#1E1B4B" stroke="#8B5CF6" stroke-opacity="0.7"/>
+    <circle cx="160" cy="358" r="14" fill="url(#purple)"/>
+    <text x="184" y="365" class="laneTitle">Workload</text>
+    <text x="150" y="402" class="nodeTitle">LLM serving</text>
+    <text x="150" y="430" class="nodeText">attention · KV cache</text>
+    <text x="150" y="452" class="nodeText">prefill / decode shapes</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="392" y="324" width="214" height="138" rx="24" fill="#172554" stroke="#60A5FA" stroke-opacity="0.7"/>
+    <circle cx="426" cy="358" r="14" fill="url(#cyan)"/>
+    <text x="450" y="365" class="laneTitle">Compiler</text>
+    <text x="416" y="402" class="nodeTitle">Plan + MLIR</text>
+    <text x="416" y="430" class="nodeText">layout / ABI gates</text>
+    <text x="416" y="452" class="nodeText">LLVM dialect lowering</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="658" y="324" width="214" height="138" rx="24" fill="#083344" stroke="#22D3EE" stroke-opacity="0.7"/>
+    <circle cx="692" cy="358" r="14" fill="url(#cyan)"/>
+    <text x="716" y="365" class="laneTitle">Runtime</text>
+    <text x="682" y="402" class="nodeTitle">Vortex simx</text>
+    <text x="682" y="430" class="nodeText">object · ELF · vxbin</text>
+    <text x="682" y="452" class="nodeText">launch · copy · readback</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="924" y="324" width="214" height="138" rx="24" fill="#052E2B" stroke="#34D399" stroke-opacity="0.7"/>
+    <circle cx="958" cy="358" r="14" fill="url(#green)"/>
+    <text x="982" y="365" class="laneTitle">Evidence</text>
+    <text x="948" y="402" class="nodeTitle">Trace loop</text>
+    <text x="948" y="430" class="nodeText">correctness · PERF</text>
+    <text x="948" y="452" class="nodeText">metrics · history · deltas</text>
+  </g>
+
+  <path d="M348 393H378" stroke="#93C5FD" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M614 393H644" stroke="#93C5FD" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M880 393H910" stroke="#93C5FD" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
+
+  <path d="M1031 472C1031 554 248 554 248 474" stroke="#5EEAD4" stroke-width="3" stroke-linecap="round" stroke-dasharray="8 10" marker-end="url(#arrowGreen)"/>
+  <text x="498" y="542" class="nodeText" fill="#99F6E4">codesign feedback: change target, memory, runtime, schedule, or kernel</text>
+
+  <g opacity="0.98">
+    <rect x="128" y="520" width="210" height="80" rx="18" fill="#0F172A" stroke="#334155"/>
+    <text x="152" y="550" class="metric">0</text>
+    <text x="180" y="550" class="metricLabel">mismatches</text>
+    <text x="152" y="575" class="small">host-reference correctness gate</text>
+  </g>
+  <g opacity="0.98">
+    <rect x="370" y="520" width="210" height="80" rx="18" fill="#0F172A" stroke="#334155"/>
+    <text x="394" y="550" class="metric">165k</text>
+    <text x="458" y="550" class="metricLabel">instrs</text>
+    <text x="394" y="575" class="small">Vortex PERF counter</text>
+  </g>
+  <g opacity="0.98">
+    <rect x="612" y="520" width="210" height="80" rx="18" fill="#0F172A" stroke="#334155"/>
+    <text x="636" y="550" class="metric">414k</text>
+    <text x="706" y="550" class="metricLabel">cycles</text>
+    <text x="636" y="575" class="small">runtime evidence, not a guess</text>
+  </g>
+  <g opacity="0.98">
+    <rect x="854" y="520" width="284" height="80" rx="18" fill="#0F172A" stroke="#334155"/>
+    <text x="878" y="550" class="metric">JSONL</text>
+    <text x="956" y="550" class="metricLabel">history</text>
+    <text x="878" y="575" class="small">latest-vs-previous deltas for experiments</text>
+  </g>
+
+  <g opacity="0.8">
+    <text x="122" y="630" class="small">Current target: Vortex RISC-V GPGPU · Current workload: dense attention prefill · Next: paged KV legality, target/memory specs, copy/runtime event model</text>
+  </g>
+</svg>

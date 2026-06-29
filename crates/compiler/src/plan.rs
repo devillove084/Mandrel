@@ -24,9 +24,10 @@ pub enum CompileError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VortexKernelPlan<Op, Schedule, const ARGS: usize> {
+pub struct VortexKernelPlan<Op, Schedule, Metadata, const ARGS: usize> {
     pub op: Op,
     pub schedule: Schedule,
+    pub metadata: Metadata,
     pub kernel: KernelSpec,
     pub launch: KernelLaunch<ARGS>,
     pub metrics: KernelMetrics,

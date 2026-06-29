@@ -8,12 +8,24 @@ rust-version.workspace = true
 
 [features]
 default = ["std"]
-std = ["mandrel-core/std", "mandrel-device/std", "mandrel-kernel-ir/std"]
+std = [
+    "mandrel-core/std",
+    "mandrel-device/std",
+    "mandrel-kernel-ir/std",
+    "mandrel-kernels/std",
+    "dep:safetensors",
+    "dep:serde",
+    "dep:serde_json",
+]
 
 [dependencies]
 mandrel-core = { workspace = true }
 mandrel-device = { workspace = true }
 mandrel-kernel-ir = { workspace = true }
+mandrel-kernels = { workspace = true }
+safetensors = { version = "0.8", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [lib]
 name = "mandrel_runtime"
