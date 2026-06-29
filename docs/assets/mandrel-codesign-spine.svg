@@ -78,13 +78,6 @@
   <text x="122" y="222" class="title">Workload-driven codesign lab</text>
   <text x="122" y="256" class="subtitle">LLM serving workloads drive chip, memory, runtime, compiler, and kernel decisions on open RISC-V/Vortex-like hardware.</text>
 
-  <g opacity="0.95">
-    <rect x="930" y="138" width="228" height="106" rx="22" fill="#071827" stroke="#164E63"/>
-    <text x="955" y="174" class="metric">attention_prefill_i8</text>
-    <text x="955" y="200" class="metricLabel">current executable spine</text>
-    <text x="955" y="224" class="small">correctness + trace + JSONL history</text>
-  </g>
-
   <g filter="url(#softShadow)">
     <rect x="126" y="324" width="214" height="138" rx="24" fill="#1E1B4B" stroke="#8B5CF6" stroke-opacity="0.7"/>
     <circle cx="160" cy="358" r="14" fill="url(#purple)"/>
@@ -125,8 +118,9 @@
   <path d="M614 393H644" stroke="#93C5FD" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
   <path d="M880 393H910" stroke="#93C5FD" stroke-width="3" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
 
-  <path d="M1031 472C1031 554 248 554 248 474" stroke="#5EEAD4" stroke-width="3" stroke-linecap="round" stroke-dasharray="8 10" marker-end="url(#arrowGreen)"/>
-  <text x="498" y="542" class="nodeText" fill="#99F6E4">codesign feedback: change target, memory, runtime, schedule, or kernel</text>
+  <path d="M1031 474C1031 506 248 506 248 474" stroke="#5EEAD4" stroke-width="3" stroke-linecap="round" stroke-dasharray="8 10" marker-end="url(#arrowGreen)"/>
+  <rect x="398" y="486" width="492" height="30" rx="15" fill="#071827" fill-opacity="0.92" stroke="#0F766E" stroke-opacity="0.55"/>
+  <text x="426" y="506" class="nodeText" fill="#99F6E4">codesign feedback: change target, memory, runtime, schedule, or kernel</text>
 
   <g opacity="0.98">
     <rect x="128" y="520" width="210" height="80" rx="18" fill="#0F172A" stroke="#334155"/>
