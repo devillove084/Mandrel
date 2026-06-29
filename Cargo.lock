@@ -291,6 +291,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mandrel-experiment"
+version = "0.1.0"
+dependencies = [
+ "mandrel-device",
+ "mandrel-profiler",
+]
+
+[[package]]
 name = "mandrel-ggml-adapter"
 version = "0.1.0"
 dependencies = [
@@ -787,6 +795,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "mandrel-compiler",
+ "mandrel-experiment",
  "mandrel-model-ir",
  "mandrel-profiler",
  "mandrel-runtime",

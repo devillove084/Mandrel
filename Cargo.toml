@@ -10,6 +10,7 @@ members = [
     "crates/compiler",
     "crates/core",
     "crates/device",
+    "crates/experiment",
     "crates/ggml-adapter",
     "crates/kernel-ir",
     "crates/kernels",
@@ -33,6 +34,7 @@ rust-version = "1.85"
 mandrel-compiler = { path = "crates/compiler", default-features = false }
 mandrel-core = { path = "crates/core", default-features = false }
 mandrel-device = { path = "crates/device", default-features = false }
+mandrel-experiment = { path = "crates/experiment", default-features = false }
 mandrel-ggml-adapter = { path = "crates/ggml-adapter", default-features = false }
 mandrel-kernel-ir = { path = "crates/kernel-ir", default-features = false }
 mandrel-kernels = { path = "crates/kernels", default-features = false }

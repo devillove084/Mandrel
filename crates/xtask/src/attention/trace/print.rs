@@ -13,6 +13,9 @@ pub(crate) fn print_attention_runtime_trace_report(report: AttentionRuntimeTrace
     };
 
     print_attention_runtime_trace_record(record);
+    if let Some(result) = attention_experiment_result_from_record(record) {
+        print_attention_experiment_result(&result);
+    }
 }
 
 pub(super) fn print_attention_runtime_trace_record(record: AttentionRuntimeTraceRecord) {
@@ -81,6 +84,23 @@ pub(super) fn print_attention_runtime_trace_record(record: AttentionRuntimeTrace
         format_optional_f64(record_logical_macs_per_cycle(record)),
         format_optional_u64(record.metadata.wall_time_ms)
     );
+}
+
+fn print_attention_experiment_result(result: &ExperimentResult) {
+    println!("attention.experiment result:");
+    println!("  spec_id: {}", result.spec_id);
+    println!("  status: {:?}", result.status);
+    println!("  events: {}", result.events.len());
+    println!(
+        "  total_transfer_bytes: {}",
+        result.derived_metrics.total_transfer_bytes
+    );
+    if let Some(correctness) = result.correctness {
+        println!(
+            "  correctness: passed={} compared_elements={} mismatches={}",
+            correctness.passed, correctness.compared_elements, correctness.mismatches
+        );
+    }
 }
 
 pub(super) fn print_compact_trace_record(label: &str, record: AttentionRuntimeTraceRecord) {

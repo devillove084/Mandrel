@@ -7,6 +7,7 @@ pub(crate) fn collect_attention_runtime_trace_with_enrichment(
     enrichment: AttentionRuntimeTraceEnrichment,
 ) -> AttentionRuntimeTraceReport {
     let counters = attention_counters_from_stdout(stdout);
+    let correctness = attention_correctness_from_stdout(stdout);
     let mut metadata = attention_metadata_from_stdout(stdout);
     apply_attention_trace_enrichment(&mut metadata, enrichment);
     let Some(trace_result) =
@@ -39,7 +40,11 @@ pub(crate) fn collect_attention_runtime_trace_with_enrichment(
         counters,
     );
     AttentionRuntimeTraceReport {
-        record: Some(AttentionRuntimeTraceRecord { metadata, summary }),
+        record: Some(AttentionRuntimeTraceRecord {
+            metadata,
+            summary,
+            correctness,
+        }),
         counters,
         metadata,
     }
@@ -57,6 +62,30 @@ pub(super) fn attention_counters_from_stdout(stdout: &str) -> KernelCounterTrace
             KernelCounterTrace::empty()
         }
     }
+}
+
+pub(super) fn attention_correctness_from_stdout(stdout: &str) -> Option<CorrectnessResult> {
+    let Some(line) = stdout.lines().find_map(|line| {
+        let trimmed = line.trim();
+        trimmed
+            .starts_with("attention.runtime: compare summary ")
+            .then_some(trimmed)
+    }) else {
+        warn!("Vortex runtime output did not contain an attention correctness summary line");
+        return None;
+    };
+    let elements = parse_trace_usize_field(line, "elements")?;
+    let mismatches = parse_trace_usize_field(line, "mismatches")?;
+    let Some(status) = parse_trace_field(line, "status") else {
+        warn!("attention correctness summary did not contain a status field");
+        return None;
+    };
+    if status != "exact" {
+        warn!(status, "unsupported attention correctness summary status");
+        return None;
+    }
+
+    Some(CorrectnessResult::exact(elements, mismatches))
 }
 
 pub(super) fn attention_metadata_from_stdout(stdout: &str) -> AttentionRuntimeTraceMetadata {
@@ -101,6 +130,17 @@ pub(super) fn parse_trace_u32_field(line: &str, field_name: &str) -> Option<u32>
         Ok(value) => Some(value),
         Err(error) => {
             warn!(field_name, raw, %error, "failed to parse attention runtime trace u32 field");
+            None
+        }
+    }
+}
+
+pub(super) fn parse_trace_usize_field(line: &str, field_name: &str) -> Option<usize> {
+    let raw = parse_trace_field(line, field_name)?;
+    match raw.parse::<usize>() {
+        Ok(value) => Some(value),
+        Err(error) => {
+            warn!(field_name, raw, %error, "failed to parse attention runtime trace usize field");
             None
         }
     }

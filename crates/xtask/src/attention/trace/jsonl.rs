@@ -1,6 +1,8 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 
+use mandrel_experiment::{CorrectnessResult, ExperimentResult, ExperimentStatus, RuntimeEvent};
+
 use super::*;
 
 pub(crate) fn append_attention_runtime_trace_jsonl(
@@ -15,6 +17,28 @@ pub(crate) fn append_attention_runtime_trace_jsonl(
     }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{}", render_attention_runtime_trace_jsonl(record))?;
+    Ok(true)
+}
+
+pub(crate) fn append_attention_experiment_result_jsonl(
+    report: AttentionRuntimeTraceReport,
+    path: &Path,
+) -> io::Result<bool> {
+    let Some(record) = report.record else {
+        return Ok(false);
+    };
+    let Some(result) = attention_experiment_result_from_record(record) else {
+        return Ok(false);
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(
+        file,
+        "{}",
+        render_attention_experiment_result_jsonl(&result)
+    )?;
     Ok(true)
 }
 
@@ -82,8 +106,77 @@ pub(super) fn render_attention_runtime_trace_jsonl(record: AttentionRuntimeTrace
     push_json_optional_u64(&mut json, summary.counters.instructions);
     json.push_str(",\"cycles\":");
     push_json_optional_u64(&mut json, summary.counters.cycles);
+    if let Some(correctness) = record.correctness {
+        json.push_str(",\"correctness_passed\":");
+        push_json_optional_bool(&mut json, Some(correctness.passed));
+        json.push_str(",\"correctness_compared_elements\":");
+        json.push_str(&correctness.compared_elements.to_string());
+        json.push_str(",\"correctness_mismatches\":");
+        json.push_str(&correctness.mismatches.to_string());
+    }
     json.push('}');
     json
+}
+
+pub(super) fn render_attention_experiment_result_jsonl(result: &ExperimentResult) -> String {
+    let mut json = String::new();
+    json.push('{');
+    push_json_string_field(&mut json, "schema", "mandrel.experiment.result.v0");
+    json.push(',');
+    push_json_string_field(&mut json, "spec_id", result.spec_id);
+    json.push(',');
+    push_json_string_field(&mut json, "status", experiment_status_as_str(result.status));
+    json.push_str(",\"event_count\":");
+    json.push_str(&result.events.len().to_string());
+    json.push_str(",\"event_kinds\":");
+    push_json_event_kinds(&mut json, &result.events);
+    json.push_str(",\"total_transfer_bytes\":");
+    json.push_str(&result.derived_metrics.total_transfer_bytes.to_string());
+    json.push_str(",\"instructions\":");
+    push_json_optional_u64(&mut json, result.counters.kernel.instructions);
+    json.push_str(",\"cycles\":");
+    push_json_optional_u64(&mut json, result.counters.kernel.cycles);
+    if let Some(correctness) = result.correctness {
+        json.push_str(",\"correctness_passed\":");
+        push_json_optional_bool(&mut json, Some(correctness.passed));
+        json.push_str(",\"correctness_compared_elements\":");
+        json.push_str(&correctness.compared_elements.to_string());
+        json.push_str(",\"correctness_mismatches\":");
+        json.push_str(&correctness.mismatches.to_string());
+    }
+    json.push('}');
+    json
+}
+
+fn experiment_status_as_str(status: ExperimentStatus) -> &'static str {
+    match status {
+        ExperimentStatus::Planned => "planned",
+        ExperimentStatus::Unsupported => "unsupported",
+        ExperimentStatus::Succeeded => "succeeded",
+        ExperimentStatus::Failed => "failed",
+    }
+}
+
+fn push_json_event_kinds(json: &mut String, events: &[RuntimeEvent]) {
+    json.push('[');
+    for (index, event) in events.iter().enumerate() {
+        if index != 0 {
+            json.push(',');
+        }
+        push_json_string(json, runtime_event_kind_as_str(event));
+    }
+    json.push(']');
+}
+
+fn runtime_event_kind_as_str(event: &RuntimeEvent) -> &'static str {
+    match event {
+        RuntimeEvent::Allocate { .. } => "allocate",
+        RuntimeEvent::Copy { .. } => "copy",
+        RuntimeEvent::KernelLaunch(_) => "kernel_launch",
+        RuntimeEvent::Sync { .. } => "sync",
+        RuntimeEvent::PerfCounter(_) => "perf_counter",
+        RuntimeEvent::CorrectnessCheck(_) => "correctness_check",
+    }
 }
 
 pub(super) fn parse_attention_runtime_trace_jsonl(
@@ -125,7 +218,12 @@ pub(super) fn parse_attention_runtime_trace_jsonl(
             parse_json_optional_u64(line, "cycles")?,
         ),
     );
-    Some(AttentionRuntimeTraceRecord { metadata, summary })
+    let correctness = parse_json_correctness(line)?;
+    Some(AttentionRuntimeTraceRecord {
+        metadata,
+        summary,
+        correctness,
+    })
 }
 
 pub(super) fn parse_json_u32(line: &str, field_name: &str) -> Option<u32> {
@@ -162,6 +260,17 @@ pub(super) fn parse_json_optional_u64(line: &str, field_name: &str) -> Option<Op
     }
 }
 
+pub(super) fn parse_json_optional_usize(line: &str, field_name: &str) -> Option<Option<usize>> {
+    let Some(raw) = parse_json_nullable_scalar_field(line, field_name) else {
+        return Some(None);
+    };
+    if raw == "null" {
+        Some(None)
+    } else {
+        Some(Some(raw.parse::<usize>().ok()?))
+    }
+}
+
 pub(super) fn parse_json_optional_bool(line: &str, field_name: &str) -> Option<Option<bool>> {
     let Some(raw) = parse_json_nullable_scalar_field(line, field_name) else {
         return Some(None);
@@ -170,6 +279,20 @@ pub(super) fn parse_json_optional_bool(line: &str, field_name: &str) -> Option<O
         "null" => Some(None),
         "true" => Some(Some(true)),
         "false" => Some(Some(false)),
+        _ => None,
+    }
+}
+
+pub(super) fn parse_json_correctness(line: &str) -> Option<Option<CorrectnessResult>> {
+    let passed = parse_json_optional_bool(line, "correctness_passed")?;
+    let compared_elements = parse_json_optional_usize(line, "correctness_compared_elements")?;
+    let mismatches = parse_json_optional_usize(line, "correctness_mismatches")?;
+    match (passed, compared_elements, mismatches) {
+        (None, None, None) => Some(None),
+        (Some(passed), Some(compared_elements), Some(mismatches)) => {
+            let result = CorrectnessResult::exact(compared_elements, mismatches);
+            (result.passed == passed).then_some(Some(result))
+        }
         _ => None,
     }
 }

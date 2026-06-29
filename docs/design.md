@@ -1,6 +1,6 @@
 # Design
 
-Mandrel is organized around attention-like operators and an MLIR-first device-code path. The current baseline can schedule `attention_prefill_i8`, generate LLVM dialect MLIR, build Vortex RISC-V artifacts, package a `.vxbin`, launch it through Vortex `simx`, read back output, and compare against a host reference.
+Mandrel is organized around measurable full-stack design variables for LLM-serving workloads and an MLIR-first device-code path. The current baseline can schedule `attention_prefill_i8`, generate LLVM dialect MLIR, build Vortex RISC-V artifacts, package a `.vxbin`, launch it through Vortex `simx`, read back output, compare against a host reference, and emit trace/experiment evidence for optimization analysis.
 
 ## End-to-end architecture
 
@@ -29,6 +29,7 @@ The key separation is:
 - `schedule`: tile shape, thread block, KV layout, online-softmax strategy.
 - `compiler`: schedule selection plus launch/argument/metric plan construction.
 - `kernel-ir`: symbols, signatures, availability, launch descriptors.
+- `experiment`: first-pass experiment specs/results, target/memory specs, correctness policy, and runtime-event records.
 - `vortex-backend`: runtime wrapper, artifact registry, MLIR generation, Vortex artifact builder, launch validation, and runtime execution.
 - `xtask`: toolchain bootstrap/status commands plus artifact/runtime correctness entry points.
 
@@ -164,8 +165,8 @@ The local model follows FlashInfer/FlashAttention concepts at the planning level
 
 ```sh
 cargo fmt --check
-cargo check -p mandrel-kernel-ir -p mandrel-schedule -p mandrel-profiler -p mandrel-compiler -p mandrel-vortex-backend -p mandrel-ggml-adapter -p mandrel-kernels -p mandrel-runtime -p xtask
-cargo test -p mandrel-kernel-ir -p mandrel-schedule -p mandrel-profiler -p mandrel-compiler -p mandrel-vortex-backend -p mandrel-ggml-adapter -p mandrel-kernels -p mandrel-runtime -p xtask
+cargo check -p mandrel-kernel-ir -p mandrel-schedule -p mandrel-profiler -p mandrel-experiment -p mandrel-compiler -p mandrel-vortex-backend -p mandrel-ggml-adapter -p mandrel-kernels -p mandrel-runtime -p xtask
+cargo test -p mandrel-kernel-ir -p mandrel-schedule -p mandrel-profiler -p mandrel-experiment -p mandrel-compiler -p mandrel-vortex-backend -p mandrel-ggml-adapter -p mandrel-kernels -p mandrel-runtime -p xtask
 cargo vortex-plan-attention
 cargo vortex-generate-attention
 cargo vortex-run-attention

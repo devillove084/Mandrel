@@ -69,6 +69,20 @@ pub(crate) fn run_vortex_attention_correctness(workspace_root: &Path) -> Result<
             trace_jsonl_path.display()
         );
     }
+    let experiment_jsonl_path = artifacts.vxbin_path.with_extension("experiment.jsonl");
+    if trace::append_attention_experiment_result_jsonl(report, &experiment_jsonl_path).map_err(
+        |error| {
+            XtaskError::message(format!(
+                "failed to write attention experiment result '{}': {error}",
+                experiment_jsonl_path.display()
+            ))
+        },
+    )? {
+        println!(
+            "attention.experiment result jsonl: {}",
+            experiment_jsonl_path.display()
+        );
+    }
     Ok(())
 }
 

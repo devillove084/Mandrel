@@ -1,0 +1,25 @@
+[package]
+name = "mandrel-experiment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["std"]
+std = [
+    "mandrel-device/std",
+    "mandrel-profiler/std",
+]
+
+[dependencies]
+mandrel-device = { workspace = true }
+mandrel-profiler = { workspace = true }
+
+[lib]
+name = "mandrel_experiment"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
