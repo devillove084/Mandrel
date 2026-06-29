@@ -105,58 +105,59 @@ flowchart TD
 
 ### 4.2 Notation
 
-The table below defines the notation used in this survey. Symbols are chosen to be implementable as fields in future Mandrel `WorkloadSpec`, `Paged
-KvLayoutSpec`, and `MemorySystemSpec` objects.
+The table below defines the notation used in this survey. Symbols are chosen to be implementable as fields in future Mandrel `WorkloadSpec`, `PagedKvLayoutSpec`, and `MemorySystemSpec` objects.
 
 | Symbol | Meaning | Mandrel relevance |
 | --- | --- | --- |
-| `B` | Active batch size or number of live sequences in a scheduling step. | `WorkloadSpec` and runtime trace. |
-| `R` | Number of requests in a trace or experiment window. | Experiment aggregation. |
-| `L` | Number of transformer layers. | KV memory model. |
-| `S_i` | Current sequence length of request `i`, including prompt and generated tokens. | Dense and paged KV shape. |
-| `S_prompt,i` | Prompt length of request `i`. | Prefill workload. |
-| `S_gen,i` | Generated length of request `i`. | Decode workload. |
-| `H_q` | Number of query heads. | Attention math and GQA mapping. |
-| `H_kv` | Number of KV heads. | KV memory size and GQA/MQA layout. |
-| `g = H_q / H_kv` | GQA group size when `H_q` is divisible by `H_kv`. | Head mapping legality. |
-| `d_h` | Head dimension. | ABI, tile shape, local memory. |
-| `b_K`, `b_V` | Bytes per key/value scalar after quantization or compression. | KV memory model. |
-| `P` | Page or block size in tokens for paged KV. | `PagedKvLayoutSpec.page_size`. |
-| `N_page,i = ceil(S_i / P)` | Logical pages for request `i`. | Block-table length. |
-| `W_i = N_page,i P - S_i` | Token slots wasted by the ragged tail of request `i`. | Fragmentation and page-size tradeoff. |
-| `Q`, `K`, `V`, `O` | Query, key, value, and output tensors. | Operator semantics. |
-| `T_q`, `T_k` | Query and key tile sizes. | Schedule and local-memory plan. |
-| `M_local` | Local memory or scratchpad per workgroup/core. | Target constraint. |
-| `BW_g`, `BW_l`, `BW_link` | Global memory, local memory, and host/device or device/device link bandwidth. | `MemorySystemSpec`. |
-| `E` | Runtime event stream. | `ExperimentResult.events`. |
+| $B$ | Active batch size or number of live sequences in a scheduling step. | `WorkloadSpec` and runtime trace. |
+| $R$ | Number of requests in a trace or experiment window. | Experiment aggregation. |
+| $L$ | Number of transformer layers. | KV memory model. |
+| $S_i$ | Current sequence length of request $i$, including prompt and generated tokens. | Dense and paged KV shape. |
+| $S_{\mathrm{prompt},i}$ | Prompt length of request $i$. | Prefill workload. |
+| $S_{\mathrm{gen},i}$ | Generated length of request $i$. | Decode workload. |
+| $H_q$ | Number of query heads. | Attention math and GQA mapping. |
+| $H_{\mathrm{kv}}$ | Number of KV heads. | KV memory size and GQA/MQA layout. |
+| $g = H_q / H_{\mathrm{kv}}$ | GQA group size when $H_q$ is divisible by $H_{\mathrm{kv}}$. | Head mapping legality. |
+| $d_h$ | Head dimension. | ABI, tile shape, local memory. |
+| $b_K$, $b_V$ | Bytes per key/value scalar after quantization or compression. | KV memory model. |
+| $P$ | Page or block size in tokens for paged KV. | `PagedKvLayoutSpec.page_size`. |
+| $N_{\mathrm{page},i} = \lceil S_i / P \rceil$ | Logical pages for request $i$. | Block-table length. |
+| $W_i = N_{\mathrm{page},i}P - S_i$ | Token slots wasted by the ragged tail of request $i$. | Fragmentation and page-size tradeoff. |
+| $Q$, $K$, $V$, $O$ | Query, key, value, and output tensors. | Operator semantics. |
+| $T_q$, $T_k$ | Query and key tile sizes. | Schedule and local-memory plan. |
+| $M_{\mathrm{local}}$ | Local memory or scratchpad per workgroup/core. | Target constraint. |
+| $BW_g$, $BW_l$, $BW_{\mathrm{link}}$ | Global memory, local memory, and host/device or device/device link bandwidth. | `MemorySystemSpec`. |
+| $E$ | Runtime event stream. | `ExperimentResult.events`. |
 
 ### 4.3 First-order KV and paging model
 
 For an uncompressed dense KV cache, the approximate bytes per request are:
 
-```text
-KV_bytes_i = L * S_i * H_kv * d_h * (b_K + b_V)
-```
+$$
+\mathrm{KVBytes}_i = L \cdot S_i \cdot H_{\mathrm{kv}} \cdot d_h \cdot (b_K + b_V)
+$$
 
 For a homogeneous batch:
 
-```text
-KV_bytes_batch = sum_i KV_bytes_i
-```
+$$
+\mathrm{KVBytes}_{\mathrm{batch}} = \sum_i \mathrm{KVBytes}_i
+$$
 
-With quantization or compression, `b_K` and `b_V` become effective bytes per scalar. With eviction or sparse retention, a retention factor `rho_i` can be modeled separately:
+With quantization or compression, $b_K$ and $b_V$ become effective bytes per scalar. With eviction or sparse retention, a retention factor $\rho_i$ can be modeled separately:
 
-```text
-effective_KV_bytes_i = rho_i * L * S_i * H_kv * d_h * (b_K + b_V)
-```
+$$
+\mathrm{EffectiveKVBytes}_i = \rho_i \cdot L \cdot S_i \cdot H_{\mathrm{kv}} \cdot d_h \cdot (b_K + b_V)
+$$
 
-For paged KV with page size `P`, logical page count and tail waste are:
+For paged KV with page size $P$, logical page count and tail waste are:
 
-```text
-N_page_i = ceil(S_i / P)
-W_i = N_page_i * P - S_i
-page_waste_ratio = sum_i W_i / sum_i (N_page_i * P)
-```
+$$
+\begin{aligned}
+N_{\mathrm{page},i} &= \left\lceil \frac{S_i}{P} \right\rceil, \\
+W_i &= N_{\mathrm{page},i} \cdot P - S_i, \\
+\mathrm{PageWasteRatio} &= \frac{\sum_i W_i}{\sum_i \left(N_{\mathrm{page},i} \cdot P\right)}.
+\end{aligned}
+$$
 
 Paged attention adds at least three costs that are absent or less visible in dense-contiguous attention:
 
