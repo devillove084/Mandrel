@@ -21,7 +21,7 @@ LLM serving; KV cache; paged attention; prefill/decode disaggregation; attention
 
 LLM inference is increasingly constrained by system effects outside dense GEMM. During **prefill**, models process prompt tokens in parallel and can be compute intensive. During **decode**, each generation step often reads an ever-growing KV cache and can be memory-bandwidth, launch, synchronization, or scheduling limited. Serving systems therefore depend on KV cache allocation, page-table indirection, continuous batching, prefix reuse, prefill/decode scheduling, KV transfer, runtime event handling, and target-specific attention kernels. Modern systems such as vLLM, SGLang, Splitwise, DistServe, Sarathi-Serve, FlashAttention-3, and FlashInfer each optimize different portions of this stack [1]--[8].
 
-Mandrel targets a different but related problem. Rather than building a production CUDA serving framework, Mandrel aims to use LLM-serving workloads to guide open accelerator codesign. Its current path is intentionally narrow: dense `attention_prefill_i8` is represented in Rust IR and schedule metadata, lowered through LLVM dialect MLIR, compiled into Vortex artifacts, launched under `simx`, checked against a host reference, and recorded as trace history. This creates an executable anchor for exploring hardware/software tradeoffs on an open RISC-V/Vortex-like target.
+Mandrel targets a different but related problem. Rather than building a production CUDA serving framework, Mandrel uses LLM-serving workloads to study open accelerator codesign. Its current path is intentionally narrow: dense `attention_prefill_i8` is represented in Rust IR and schedule metadata, lowered through LLVM-dialect MLIR, compiled into Vortex artifacts, launched under SimX, checked against a host reference, and recorded as a versioned JSON result plus a CSV summary. This creates an executable anchor for researcher-designed hardware/software experiments on an open RISC-V/Vortex target.
 
 The question is how such a system should evolve in light of recent LLM-serving literature. A naive direction would be to immediately port a paged attention kernel or expose a framework backend. The literature suggests a different order. Paged attention is no longer just a memory layout; it is a scheduling and runtime problem [1], [10]--[13]. Prefill/decode separation is no longer just a cluster-level deployment trick; it changes KV movement, runtime policy, and service-level objectives [3]--[5], [14]--[22]. KV compression, eviction, and sparse retrieval are no longer isolated model-side approximations; they must be compatible with paged layouts, fused kernels, and correctness policies [33]--[44]. Kernel performance is increasingly target-specific, and abstractions that work well on Hopper, TPU, Ascend, or disaggregated GPU clusters cannot be assumed to transfer to Vortex [6], [7], [11], [46], [47], [51]--[54].
 
@@ -205,8 +205,8 @@ flowchart TD
     D --> E[Vortex object ELF vxbin]
     E --> F[Vortex simx runtime launch]
     F --> G[Host reference correctness]
-    F --> H[PERF transfer workload trace history]
-    G --> I[Evidence for next codesign decision]
+    F --> H[PERF counters and runtime events]
+    G --> I[JSON result and CSV row]
     H --> I
 ```
 
@@ -214,7 +214,7 @@ flowchart TD
 
 The current codebase already contains dense attention metadata and a paged KV placeholder. `AttentionKvLayout::Paged { page_size }` and `AttentionKvCacheMetadata::Paged` exist, but the current Vortex backend rejects paged KV metadata because the ABI and lowering do not support it yet. This is a useful state: Mandrel can represent unsupported future layouts without silently pretending that they run.
 
-The main gap is that several roadmap concepts are only partially code objects. A minimal `mandrel-experiment` crate now provides first-pass `ExperimentSpec`, `ExperimentResult`, `WorkloadSpec`, `TargetSpec`, `MemorySystemSpec`, `RuntimeEvent`, and correctness/result records, and the `xtask` attention trace path can derive and write a companion experiment-result JSONL from live `vortex-run-attention` output. A rich `PagedKvLayoutSpec`, paged-KV legality layer, and runtime-generated event stream still need to be implemented before complex paged decode lowering.
+The main gap is that several roadmap concepts are still only partial code objects. `mandrel-experiment`, `mandrel-target-ir`, `mandrel-artifact`, and `mandrel-hardware` now provide first-pass experiment, target, artifact, and hardware schemas. The live `vortex-run-attention` path writes a v2 JSON result and one-row CSV summary. Resolved hardware/build identities, artifact digests, a rich `PagedKvLayoutSpec`, paged-KV legality, and structured compute IR still need to be implemented before complex paged decode lowering.
 
 ## 6. Taxonomy of the Literature
 
@@ -288,17 +288,17 @@ Security-oriented work also has performance implications. The Serialized Bridge 
 
 ### 7.6 Compiler, kernel DSL, and benchmark-loop infrastructure
 
-FlashInfer-Bench is structurally important for Mandrel because it defines a closed-loop framework connecting kernel definitions, workloads, implementations, evaluation, and deployment substitution [8]. TileLang, ThunderKittens, CUDA Tile, and similar systems show the increasing role of tile-level kernel abstractions, but CUDA Tile's cross-architecture evaluation cautions that abstraction-level portability does not guarantee performance portability [47]. PerfDojo and SimdBench explore automated optimization or code generation across heterogeneous architectures and SIMD targets [49], [50].
+FlashInfer-Bench is structurally important for Mandrel because it connects kernel definitions, workloads, implementations, evaluation, and deployment substitution [8]. TileLang, ThunderKittens, CUDA Tile, and similar systems show the increasing role of tile-level kernel abstractions, but CUDA Tile's cross-architecture evaluation cautions that abstraction-level portability does not guarantee performance portability [47]. PerfDojo and SimdBench explore automated optimization or code generation across heterogeneous architectures and SIMD targets [49], [50].
 
-**Implication.** Mandrel should keep its current MLIR/Vortex path while adopting the structural idea of a closed experiment loop: workload specification, target specification, generated artifact, correctness check, trace, and report.
+**Implication.** Mandrel should keep its current MLIR/Vortex path while adopting a reproducible experiment contract: workload specification, software and hardware design, generated artifacts, correctness, evidence class, and report. Experiment selection and interpretation remain human decisions.
 
 ### 7.7 RISC-V and open accelerator systems
 
 Open hardware work provides useful context but does not yet replace Mandrel's niche. V-Seek optimizes LLM reasoning on a server-class RISC-V platform and reports token-generation and prompt-processing improvements on DeepSeek-derived models [52]. Occamy is a 432-core dual-chiplet dual-HBM2E RISC-V system with reported high utilization on dense and sparse workloads, including LLM-related workloads [53]. Tenstorrent Grayskull evaluation characterizes a RISC-V accelerator for matmul [51]. XiangShan Nanhu-vdot studies a RISC-V vector dot-product extension for GPT-2 inference [54].
 
-These systems validate that RISC-V/open hardware is relevant to ML inference, but they do not provide an end-to-end LLM-serving attention/KV codesign loop with generated kernels, Vortex artifacts, correctness checks, and trace history.
+These systems validate that RISC-V/open hardware is relevant to ML inference. In the corpus reviewed for this survey, we did not establish a directly comparable workflow combining the same serving-motivated attention/KV path, Vortex artifacts, parameterized RTL, correctness contract, and unified software/hardware evidence. This is a project motivation rather than a uniqueness claim.
 
-**Implication.** Mandrel's differentiation is credible if it remains executable and evidence-driven.
+**Implication.** Mandrel's differentiation must come from executable, reproducible evidence, not broad priority claims.
 
 ## 8. Key Paper Deep Reads
 
@@ -398,8 +398,7 @@ This section reads the most relevant papers one by one. The goal is not to repro
 
 **Portability caveat.** The exact benchmark suite is serving-kernel oriented and CUDA-centered, but the loop structure is general.
 
-**Mandrel mapping.** This is one of the strongest structural references for `mandrel-experiment`: `ExperimentSpec -> ArtifactSet -> RuntimeTrace -> CorrectnessResult ->
- Report` should be a closed loop.
+**Mandrel mapping.** This is a strong structural reference for `mandrel-experiment`: `ExperimentSpec -> ArtifactSet -> RuntimeEvidence -> CorrectnessResult -> JSON/CSV report`. Mandrel deliberately stops before automatic experiment selection or deployment substitution.
 
 ### 8.9 PersistentKV [10]
 
@@ -691,18 +690,18 @@ flowchart TD
 
     B --> O[crates schedule attention metadata]
     D --> P[future mandrel experiment crate]
-    F --> Q[crates compiler and vortex-backend MLIR]
+    F --> Q[crates compiler and vortex-codegen]
     H --> O
-    J --> R[crates profiler trace event history]
+    J --> R[crates profiler runtime events]
     L --> P
-    N --> S[crates device runtime vortex-backend]
+    N --> S[crates target-ir hardware runtime vortex-backend]
 
-    O --> T[Generated Vortex artifacts]
+    O --> T[Generated software and hardware artifacts]
     P --> T
     Q --> T
     S --> T
-    T --> U[simx runtime correctness]
-    U --> V[Experiment report and next codesign decision]
+    T --> U[SimX and future RTL correctness]
+    U --> V[JSON result and CSV summary]
     R --> V
 ```
 
@@ -715,27 +714,24 @@ flowchart TD
 | Dense attention semantics | `attention_prefill_i8`, model/schedule/compiler path. | `WorkloadSpec` plus `AttentionOp` fields. | Preserve executable correctness. |
 | Dense KV layout | `AttentionKvLayout::DenseContiguous`. | `DenseKvLayoutSpec`. | Keep as baseline. |
 | Paged KV layout | `AttentionKvLayout::Paged { page_size }`; compiler metadata placeholder. | `PagedKvLayoutSpec`. | Add legality fields and precise rejection. |
-| Attention schedule | Dense online 4x16x64 schedule. | `ScheduleSpec` with tiles, softmax, work assignment. | Make `key_tile` structural in MLIR. |
-| Runtime trace | Summary launch and transfer fields in profiler. | `Vec<RuntimeEvent>`. | Convert summaries into event records. |
-| Target assumptions | Implicit Vortex/backend assumptions. | `TargetSpec`. | Encode Vortex capabilities and limits. |
-| Memory assumptions | Local memory bytes and transfer summaries. | `MemorySystemSpec`. | Model global/local/link bandwidth placeholders. |
-| Experiment loop | `xtask` commands and trace JSONL. | `ExperimentSpec` and `ExperimentResult`. | Add workspace crate or module for experiment reports. |
+| Attention schedule | Dense scalar two-pass 4x1x64 baseline with direct global loads. | `ScheduleSpec` with tiles, softmax, work assignment. | Add a distinct key-tiled online candidate and make `key_tile` structural in MLIR. |
+| Runtime evidence | Launch, transfer, counter, and correctness records. | `Vec<RuntimeEvent>`. | Add richer hardware/backend events without conflating evidence classes. |
+| Target assumptions | Canonical `TargetSpec`, requirements, and exact target contract. | Requested/realized/observed target model. | Derive realized facts from materialized Vortex configurations. |
+| Memory assumptions | Local memory bytes and transfer summaries. | `MemorySystemSpec`. | Make memory parameters drive legality and reporting. |
+| Experiment contract | `ExperimentSpec`, `ExperimentResult`, JSON v2, and CSV output. | Realized build/artifact provenance and study manifests. | Add digests and failure outcomes; keep comparisons human-authored. |
 | Correctness | Host-reference compare for dense smoke. | `CorrectnessPolicy` and `CorrectnessResult`. | Generalize exact vs approximate policy. |
 | SLO/goodput | Not present. | `SloPolicy` and serving metrics. | Add fields before serving replay. |
 
 ### 10.7 Roadmap adjustment
 
-| Priority | Recommended change | Rationale |
-| --- | --- | --- |
-| P0 | Keep dense `attention_prefill_i8` executable and correct. | This is Mandrel's evidence anchor. |
-| P1 | Implement `mandrel-experiment` or equivalent experiment module. | Recent systems emphasize reproducible experiment loops and simulation. |
-| P2 | Convert summary trace fields into event records. | Runtime movement often dominates serving behavior. |
-| P3 | Expand paged KV metadata and legality checks. | Paged KV is schedule- and target-dependent. |
-| P4 | Add `TargetSpec` and `MemorySystemSpec`. | Kernel decisions require explicit target assumptions. |
-| P5 | Make dense tiled online attention structural in MLIR. | This is the nearest executable performance step. |
-| P6 | Add serving-shaped replay traces. | Workload shape matters before framework integration. |
-| P7 | Explore paged decode lowering and workqueue policies. | Decode requires page-aware work assignment. |
-| P8 | Evaluate compression/quantization policies as metadata first. | KV compression must be layout- and correctness-aware. |
+The canonical implementation sequence is maintained in [`roadmap.md`](roadmap.md). The survey supports four ordering constraints:
+
+1. preserve the exact-correct dense baseline;
+2. bind software artifacts to a materialized hardware/config identity;
+3. make dense serving semantics and key-tiled online attention structural before paged lowering;
+4. validate existing Vortex TCU/DXA and RTL evidence before introducing a Mandrel-specific primitive.
+
+Paged KV, serving replay, compression, and framework probes follow those contracts rather than defining a parallel roadmap inside this survey.
 
 ## 11. Paged KV and Disaggregation Schematics
 

@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use mandrel_target_ir::{TargetContract, TargetSpec};
 use mandrel_vortex_backend::{
-    VortexBackend, VortexBackendConfig, VortexConfig, reference_attention_prefill_i8,
-    validate_attention_prefill_i8_plan_abi,
+    VortexBackend, VortexBackendConfig, VortexConfig, VortexDeviceCaps,
+    reference_attention_prefill_i8,
 };
+use mandrel_vortex_codegen::validate_attention_prefill_i8_plan_abi;
 
 use crate::command::run_checked_capturing_stdout;
 use crate::vortex::{
@@ -23,12 +25,13 @@ use super::metrics::{
     AttentionRuntimeWorkload, attention_i8_checksum, attention_i8_max_abs,
     format_mandrel_runtime_trace_line,
 };
-use super::plan::current_attention_prefill_plan;
-use super::trace;
+use super::plan::{current_attention_experiment_spec, current_attention_prefill_plan};
+use super::{report, trace};
 
 pub(crate) fn run_vortex_attention_correctness(workspace_root: &Path) -> Result<()> {
     let config = VortexConfig::from_env(workspace_root)?;
-    let artifacts = generate_vortex_attention_artifacts(workspace_root, false)?;
+    let spec = current_attention_experiment_spec()?;
+    let artifacts = generate_vortex_attention_artifacts(workspace_root, spec, false)?;
     require_file(&artifacts.vxbin_path, "generated attention vxbin")?;
     ensure_vortex_runtime_libraries(&config)?;
     let runtime = preferred_vortex_runtime_library(&config)?;
@@ -54,46 +57,33 @@ pub(crate) fn run_vortex_attention_correctness(workspace_root: &Path) -> Result<
     println!("attention.runtime: outer command wall_time_ms={wall_time_ms}");
     let report = trace::collect_attention_runtime_trace_with_enrichment(
         &stdout,
-        trace::AttentionRuntimeTraceEnrichment::with_wall_time_ms(wall_time_ms),
+        trace::AttentionRuntimeTraceEnrichment::with_experiment_spec(wall_time_ms, spec),
     );
     trace::print_attention_runtime_trace_report(report);
-    let trace_jsonl_path = artifacts.vxbin_path.with_extension("trace.jsonl");
-    if trace::append_attention_runtime_trace_jsonl(report, &trace_jsonl_path).map_err(|error| {
+    let Some(record) = report.record else {
+        return Err("attention run did not produce a structured experiment record".into());
+    };
+    let result = report::experiment_result_with_artifacts(record, &artifacts, workspace_root)
+        .ok_or_else(|| {
+            XtaskError::message("attention trace could not form an experiment result")
+        })?;
+    let experiment_path = artifacts.vxbin_path.with_extension("experiment.json");
+    report::write_experiment_json(&result, record, &experiment_path).map_err(|error| {
         XtaskError::message(format!(
-            "failed to write attention runtime trace '{}': {error}",
-            trace_jsonl_path.display()
+            "failed to write attention experiment result '{}': {error}",
+            experiment_path.display()
         ))
-    })? {
-        println!(
-            "attention.runtime trace jsonl: {}",
-            trace_jsonl_path.display()
-        );
-    }
-    let experiment_jsonl_path = artifacts.vxbin_path.with_extension("experiment.jsonl");
-    if trace::append_attention_experiment_result_jsonl(report, &experiment_jsonl_path).map_err(
-        |error| {
-            XtaskError::message(format!(
-                "failed to write attention experiment result '{}': {error}",
-                experiment_jsonl_path.display()
-            ))
-        },
-    )? {
-        println!(
-            "attention.experiment result jsonl: {}",
-            experiment_jsonl_path.display()
-        );
-    }
+    })?;
+    let csv_path = artifacts.vxbin_path.with_extension("experiment.csv");
+    report::write_experiment_csv(&result, record, &csv_path).map_err(|error| {
+        XtaskError::message(format!(
+            "failed to write attention experiment CSV '{}': {error}",
+            csv_path.display()
+        ))
+    })?;
+    println!("attention.experiment json: {}", experiment_path.display());
+    println!("attention.experiment csv: {}", csv_path.display());
     Ok(())
-}
-
-pub(crate) fn print_attention_trace_history(workspace_root: &Path) -> Result<()> {
-    let path = trace::default_attention_trace_jsonl_path(workspace_root);
-    trace::print_attention_trace_history(&path, 5).map_err(|error| {
-        XtaskError::message(format!(
-            "failed to read attention runtime trace history '{}': {error}",
-            path.display()
-        ))
-    })
 }
 
 pub(crate) fn run_vortex_attention_correctness_inner(
@@ -102,12 +92,25 @@ pub(crate) fn run_vortex_attention_correctness_inner(
 ) -> Result<()> {
     require_file(&vxbin_path, "generated attention vxbin")?;
 
-    runtime_step("compiling attention launch plan")?;
-    let plan = current_attention_prefill_plan()?;
+    let spec = current_attention_experiment_spec()?;
+    runtime_step("compiling attention launch plan from experiment spec")?;
+    let plan = current_attention_prefill_plan(spec)?;
     runtime_step("validating attention ABI/layout metadata")?;
     validate_attention_prefill_i8_plan_abi(&plan)?;
     runtime_step("building deterministic attention input")?;
     let input = deterministic_attention_prefill_input(&plan)?;
+    if input.sequence as usize != spec.workload.attention.sequence
+        || input.head_dim as usize != spec.workload.attention.head_dim
+    {
+        return Err(format!(
+            "attention runtime input shape {}x{} does not match experiment spec {}x{}",
+            input.sequence,
+            input.head_dim,
+            spec.workload.attention.sequence,
+            spec.workload.attention.head_dim
+        )
+        .into());
+    }
     let runtime_shape = plan.metadata.runtime_shape;
     runtime_step(&format!(
         "runtime shape compiled={}x{} default={}x{} actual={}x{} tile(query={}, key={}, head_dim={})",
@@ -167,16 +170,58 @@ pub(crate) fn run_vortex_attention_correctness_inner(
     ))?;
 
     runtime_step("initializing Vortex backend/runtime")?;
+    let vortex_config = VortexConfig::from_env(workspace_root)?;
     let config =
         VortexBackendConfig::new().with_kernel_artifact(runtime_launch.symbol, &vxbin_path);
     let mut backend = VortexBackend::new(config)
         .map_err(|error| format!("failed to initialize Vortex backend runtime: {error}"))?;
+    let target_caps = backend
+        .device_capabilities()
+        .map_err(|error| format!("failed to query Vortex target capabilities: {error}"))?;
+    let observed_target = observed_vortex_simx_target(vortex_config.xlen, target_caps)?;
+    let target_contract = TargetContract::exact(spec.target, observed_target);
+    runtime_step(&format!(
+        "requested target name={} backend={} xlen={} max_workgroup_threads={} preferred_subgroup_width={} local_memory_bytes={}",
+        target_contract.requested.name,
+        target_contract.requested.backend_name(),
+        target_contract.requested.xlen,
+        target_contract.requested.max_workgroup_threads,
+        target_contract.requested.preferred_subgroup_width,
+        target_contract.requested.local_memory_bytes
+    ))?;
+    runtime_step(&format!(
+        "observed target name={} backend={} xlen={} threads_per_warp={} warps_per_core={} max_workgroup_threads={} local_memory_bytes={}",
+        target_contract.observed.name,
+        target_contract.observed.backend_name(),
+        target_contract.observed.xlen,
+        target_caps.threads_per_warp,
+        target_caps.warps_per_core,
+        format_optional_u64(target_caps.max_workgroup_threads()),
+        target_caps.local_memory_bytes
+    ))?;
+    runtime_step(&format!(
+        "target compatibility exact={} mismatch_mask={}",
+        target_contract.is_compatible(),
+        target_contract.compatibility.mismatch_mask()
+    ))?;
+    if !target_contract.is_compatible() {
+        return Err(format!(
+            "requested Vortex target is incompatible with the runtime-observed target: {target_contract:?}"
+        )
+        .into());
+    }
     runtime_step("launching Vortex attention kernel and reading output")?;
     let actual = backend
         .run_attention_prefill_i8(&runtime_launch, &input)
         .map_err(|error| format!("failed to run attention prefill on Vortex: {error}"))?;
-    let workload =
-        AttentionRuntimeWorkload::from_runtime(&plan, &input, actual.trace, actual.output.len())?;
+    let workload = AttentionRuntimeWorkload::from_runtime(
+        &plan,
+        &input,
+        actual.trace,
+        target_caps,
+        target_contract,
+        actual.output.len(),
+    )?;
     runtime_step(&format!(
         "backend cache module_hit={} kernel_hit={}",
         actual.trace.module_cache_hit, actual.trace.kernel_cache_hit
@@ -227,6 +272,30 @@ pub(crate) fn run_vortex_attention_correctness_inner(
         format_mandrel_runtime_trace_line(actual.trace, workload)
     );
     Ok(())
+}
+
+fn observed_vortex_simx_target(xlen: u32, caps: VortexDeviceCaps) -> Result<TargetSpec> {
+    let max_workgroup_threads = caps
+        .max_workgroup_threads()
+        .ok_or_else(|| "Vortex target max workgroup thread count overflow".to_owned())?;
+    let mut observed = TargetSpec::vortex_simx_default();
+    observed.name = "vortex_simx_runtime_observed";
+    observed.xlen = xlen;
+    observed.max_workgroup_threads = u64_to_u32(
+        max_workgroup_threads,
+        "Vortex target max workgroup thread count",
+    )?;
+    observed.preferred_subgroup_width =
+        u64_to_u32(caps.threads_per_warp, "Vortex target threads per warp")?;
+    observed.local_memory_bytes = u64_to_u32(
+        caps.local_memory_bytes,
+        "Vortex target local memory byte count",
+    )?;
+    Ok(observed)
+}
+
+fn u64_to_u32(value: u64, label: &str) -> Result<u32> {
+    u32::try_from(value).map_err(|_| format!("{label} does not fit u32: {value}").into())
 }
 
 fn runtime_step(message: &str) -> Result<()> {

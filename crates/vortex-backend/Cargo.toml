@@ -7,13 +7,15 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-mandrel-compiler = { workspace = true }
+mandrel-artifact = { workspace = true, features = ["std"] }
 mandrel-kernel-ir = { workspace = true }
-mandrel-model-ir = { workspace = true }
-mandrel-profiler = { workspace = true }
-mandrel-schedule = { workspace = true }
+
 snafu = { workspace = true, features = ["std"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+mandrel-compiler = { workspace = true }
+mandrel-model-ir = { workspace = true }
 
 [lib]
 name = "mandrel_vortex_backend"

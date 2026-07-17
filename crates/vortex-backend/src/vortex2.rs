@@ -112,14 +112,14 @@ pub struct Device {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct VortexDeviceCaps {
-    pub(crate) threads_per_warp: u64,
-    pub(crate) warps_per_core: u64,
-    pub(crate) local_memory_bytes: u64,
+pub struct VortexDeviceCaps {
+    pub threads_per_warp: u64,
+    pub warps_per_core: u64,
+    pub local_memory_bytes: u64,
 }
 
 impl VortexDeviceCaps {
-    pub(crate) const fn max_workgroup_threads(self) -> Option<u64> {
+    pub const fn max_workgroup_threads(self) -> Option<u64> {
         self.threads_per_warp.checked_mul(self.warps_per_core)
     }
 }

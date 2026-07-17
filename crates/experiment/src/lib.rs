@@ -2,12 +2,15 @@
 
 extern crate alloc;
 
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 
-use mandrel_device::{DeviceBackend, DeviceCapabilities, MemorySpace};
+use mandrel_artifact::ArtifactSet;
+use mandrel_device::MemorySpace;
+use mandrel_hardware::HardwareDesignSpec;
 use mandrel_profiler::{
     KernelCounterTrace, KernelLaunchTrace, RuntimeTraceSummary, TransferDirection,
 };
+use mandrel_target_ir::{DeviceCapabilities, TargetContract, TargetSpec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkloadPhase {
@@ -58,40 +61,6 @@ impl WorkloadSpec {
             phase: WorkloadPhase::Prefill,
             attention: AttentionWorkloadShape::single_head_prefill(sequence, head_dim),
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TargetSpec {
-    pub name: &'static str,
-    pub backend: DeviceBackend,
-    pub xlen: u32,
-    pub max_workgroup_threads: u32,
-    pub local_memory_bytes: u32,
-    pub supports_int8: bool,
-    pub supports_float32: bool,
-    pub supports_tensor_cores: bool,
-}
-
-impl TargetSpec {
-    pub const fn from_device_capabilities(name: &'static str, caps: DeviceCapabilities) -> Self {
-        Self {
-            name,
-            backend: caps.backend,
-            xlen: caps.xlen,
-            max_workgroup_threads: caps.max_workgroup_threads,
-            local_memory_bytes: caps.local_memory_bytes,
-            supports_int8: caps.supports_int8,
-            supports_float32: caps.supports_float32,
-            supports_tensor_cores: caps.supports_tensor_cores,
-        }
-    }
-
-    pub const fn vortex_simx_default() -> Self {
-        Self::from_device_capabilities(
-            "vortex_simx_default",
-            DeviceCapabilities::vortex_simx_default(),
-        )
     }
 }
 
@@ -185,27 +154,6 @@ pub enum RuntimeEvent {
     CorrectnessCheck(CorrectnessResult),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArtifactSet {
-    pub mlir: Option<String>,
-    pub llvm_ir: Option<String>,
-    pub object: Option<String>,
-    pub elf: Option<String>,
-    pub vxbin: Option<String>,
-}
-
-impl ArtifactSet {
-    pub fn empty() -> Self {
-        Self {
-            mlir: None,
-            llvm_ir: None,
-            object: None,
-            elf: None,
-            vxbin: None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CounterSet {
     pub kernel: KernelCounterTrace,
@@ -236,6 +184,7 @@ impl DerivedMetrics {
 pub struct ExperimentSpec {
     pub id: &'static str,
     pub workload: WorkloadSpec,
+    pub hardware: HardwareDesignSpec,
     pub target: TargetSpec,
     pub memory: MemorySystemSpec,
     pub correctness: CorrectnessPolicy,
@@ -243,10 +192,12 @@ pub struct ExperimentSpec {
 
 impl ExperimentSpec {
     pub const fn attention_prefill_i8_vortex_smoke(sequence: usize, head_dim: usize) -> Self {
+        let hardware = HardwareDesignSpec::current_vortex_default();
         Self {
             id: "attention_prefill_i8_vortex_smoke",
             workload: WorkloadSpec::attention_prefill_i8_smoke(sequence, head_dim),
-            target: TargetSpec::vortex_simx_default(),
+            hardware,
+            target: hardware.current_vortex_simx_target(),
             memory: MemorySystemSpec::vortex_simx_default(),
             correctness: CorrectnessPolicy::Exact,
         }
@@ -265,6 +216,7 @@ pub enum ExperimentStatus {
 pub struct ExperimentResult {
     pub spec_id: &'static str,
     pub status: ExperimentStatus,
+    pub target: TargetContract,
     pub artifacts: ArtifactSet,
     pub counters: CounterSet,
     pub events: Vec<RuntimeEvent>,
@@ -275,18 +227,23 @@ pub struct ExperimentResult {
 impl ExperimentResult {
     pub fn from_runtime_trace_summary(
         spec: ExperimentSpec,
+        observed_target: TargetSpec,
         summary: RuntimeTraceSummary,
         correctness: CorrectnessResult,
     ) -> Self {
+        let target = TargetContract::exact(spec.target, observed_target);
         let mut events = events_from_runtime_trace_summary(summary);
         events.push(RuntimeEvent::CorrectnessCheck(correctness));
         Self {
             spec_id: spec.id,
-            status: if correctness.passed {
+            status: if !target.is_compatible() {
+                ExperimentStatus::Unsupported
+            } else if correctness.passed {
                 ExperimentStatus::Succeeded
             } else {
                 ExperimentStatus::Failed
             },
+            target,
             artifacts: ArtifactSet::empty(),
             counters: CounterSet {
                 kernel: summary.counters,
@@ -327,10 +284,11 @@ pub fn events_from_runtime_trace_summary(summary: RuntimeTraceSummary) -> Vec<Ru
 #[cfg(test)]
 mod tests {
     use super::{
-        CorrectnessResult, ExperimentResult, ExperimentSpec, ExperimentStatus, RuntimeEvent,
-        SyncKind, TargetSpec, events_from_runtime_trace_summary,
+        CorrectnessResult, ExperimentResult, ExperimentSpec, ExperimentStatus, HardwareDesignSpec,
+        RuntimeEvent, SyncKind, TargetContract, TargetSpec, events_from_runtime_trace_summary,
     };
     use mandrel_profiler::{KernelCounterTrace, KernelLaunchTrace, RuntimeTraceSummary};
+    use mandrel_target_ir::{TargetCapability, TargetCompatibility};
 
     #[test]
     fn builds_attention_prefill_vortex_smoke_spec() {
@@ -339,7 +297,35 @@ mod tests {
         assert_eq!(spec.id, "attention_prefill_i8_vortex_smoke");
         assert_eq!(spec.workload.attention.sequence, 64);
         assert_eq!(spec.workload.attention.head_dim, 64);
-        assert_eq!(spec.target, TargetSpec::vortex_simx_default());
+        assert_eq!(spec.hardware, HardwareDesignSpec::current_vortex_default());
+        assert_eq!(spec.target, spec.hardware.current_vortex_simx_target());
+    }
+
+    #[test]
+    fn exact_target_contract_reports_capability_mismatches() {
+        let requested = TargetSpec::vortex_simx_default();
+        let mut observed = requested;
+        observed.name = "vortex_simx_observed";
+        observed.max_workgroup_threads = 8;
+        observed.local_memory_bytes = 8 * 1024;
+        let contract = TargetContract::exact(requested, observed);
+
+        assert!(!contract.is_compatible());
+        assert_eq!(contract.compatibility.mismatch_count(), 2);
+        assert!(
+            contract
+                .compatibility
+                .mismatches(TargetCapability::MaxWorkgroupThreads)
+        );
+        assert!(
+            contract
+                .compatibility
+                .mismatches(TargetCapability::LocalMemoryBytes)
+        );
+        assert_eq!(
+            contract.compatibility.mismatch_mask(),
+            TargetCompatibility::exact(requested, observed).mismatch_mask()
+        );
     }
 
     #[test]
@@ -373,15 +359,44 @@ mod tests {
             KernelCounterTrace::empty(),
         );
         let correctness = CorrectnessResult::exact(128, 0);
-        let result = ExperimentResult::from_runtime_trace_summary(spec, summary, correctness);
+        let result = ExperimentResult::from_runtime_trace_summary(
+            spec,
+            TargetSpec::vortex_simx_default(),
+            summary,
+            correctness,
+        );
 
         assert_eq!(result.spec_id, spec.id);
         assert_eq!(result.status, ExperimentStatus::Succeeded);
+        assert!(result.target.is_compatible());
         assert_eq!(result.derived_metrics.total_transfer_bytes, 512);
         assert_eq!(result.correctness, Some(correctness));
         assert!(matches!(
             result.events.last(),
             Some(RuntimeEvent::CorrectnessCheck(_))
         ));
+    }
+
+    #[test]
+    fn incompatible_observed_target_cannot_produce_succeeded_result() {
+        let spec = ExperimentSpec::attention_prefill_i8_vortex_smoke(8, 16);
+        let mut observed = TargetSpec::vortex_simx_default();
+        observed.max_workgroup_threads = 8;
+        let summary = RuntimeTraceSummary::new(
+            KernelLaunchTrace::new("attention_prefill_i8", [2, 1, 1], [4, 4, 1], 0),
+            384,
+            128,
+            KernelCounterTrace::empty(),
+        );
+
+        let result = ExperimentResult::from_runtime_trace_summary(
+            spec,
+            observed,
+            summary,
+            CorrectnessResult::exact(128, 0),
+        );
+
+        assert_eq!(result.status, ExperimentStatus::Unsupported);
+        assert!(!result.target.is_compatible());
     }
 }

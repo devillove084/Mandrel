@@ -125,8 +125,7 @@ pub mod reference {
         assert_eq!(embedding_weight.len(), vocab_size * hidden);
         assert_eq!(out.len(), tokens * hidden);
 
-        for token in 0..tokens {
-            let token_id = token_ids[token];
+        for (token, token_id) in token_ids.iter().copied().enumerate() {
             assert!(token_id < vocab_size);
             let source_start = token_id * hidden;
             let source_end = source_start + hidden;
@@ -304,8 +303,8 @@ pub mod reference {
         assert_eq!(shape.head_dim % 2, 0);
 
         let half_dim = shape.head_dim / 2;
-        for token in 0..shape.tokens {
-            let position = positions[token] as f32;
+        for (token, position) in positions.iter().copied().enumerate() {
+            let position = position as f32;
             for head in 0..shape.heads {
                 let head_start = (token * shape.heads + head) * shape.head_dim;
                 for pair in 0..half_dim {

@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use mandrel_device::{DeviceBackend, DeviceCapabilities};
 use mandrel_model_ir::{AttentionOp, AttentionShape, AttentionTensors};
+use mandrel_target_ir::{DeviceBackend, DeviceCapabilities};
 
 pub const BACKEND_NAME: &str = "mandrel-vortex";
 
@@ -98,7 +98,7 @@ const fn same_shape_dims(lhs: GgmlTensor2d, rhs: GgmlTensor2d) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{GgmlAttentionPrefillRequest, backend_name};
-    use mandrel_device::DeviceCapabilities;
+    use mandrel_target_ir::DeviceCapabilities;
 
     #[test]
     fn exposes_backend_name() {

@@ -8,10 +8,16 @@ rust-version.workspace = true
 
 [features]
 default = ["std"]
-std = ["mandrel-core/std", "mandrel-model-ir/std", "snafu/std"]
+std = [
+    "mandrel-core/std",
+    "mandrel-target-ir/std",
+    "mandrel-model-ir/std",
+    "snafu/std",
+]
 
 [dependencies]
 mandrel-core = { workspace = true }
+mandrel-target-ir = { workspace = true }
 mandrel-model-ir = { workspace = true }
 snafu = { workspace = true }
 

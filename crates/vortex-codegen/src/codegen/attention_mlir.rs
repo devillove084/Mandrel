@@ -42,10 +42,10 @@ fn validate_attention_prefill_i8_plan(
     if !plan.kernel.signature.is_attention_prefill_i8() {
         return Err(VortexCodegenError::UnsupportedSignature { symbol });
     }
-    if plan.schedule != AttentionPrefillSchedule::dense_online_4x16x64() {
+    if plan.schedule != AttentionPrefillSchedule::dense_scalar_two_pass_4x1x64() {
         return Err(VortexCodegenError::UnsupportedSchedule {
             symbol,
-            reason: "only dense online attention prefill schedule 4x16x64 is lowered to MLIR",
+            reason: "only dense scalar two-pass attention prefill schedule 4x1x64 is lowered to MLIR",
         });
     }
     if !matches!(plan.schedule.kv_layout, AttentionKvLayout::DenseContiguous) {
@@ -58,11 +58,11 @@ fn validate_attention_prefill_i8_plan(
         .map_err(|source| VortexCodegenError::InvalidAttentionPlan { source })?;
     if !matches!(
         plan.schedule.softmax,
-        AttentionSoftmaxStrategy::OnlineMaxSum
+        AttentionSoftmaxStrategy::TwoPassStable
     ) {
         return Err(VortexCodegenError::UnsupportedSchedule {
             symbol,
-            reason: "attention prefill MLIR lowering currently supports only online max/sum softmax metadata",
+            reason: "attention prefill MLIR lowering currently supports only two-pass stable softmax metadata",
         });
     }
     if plan.launch.block.x != 4 || plan.launch.block.y != 4 || plan.launch.block.z != 1 {

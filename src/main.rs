@@ -6,7 +6,7 @@ use mandrel_kernels::reference;
 use mandrel_model_ir::{AttentionOp, SoftmaxOp};
 use mandrel_profiler::KernelMetrics;
 use mandrel_runtime::example_attention_vortex_plan;
-use mandrel_vortex_backend::vortex_capabilities;
+use mandrel_target_ir::DeviceCapabilities;
 
 const SOFTMAX_ROWS: usize = 2;
 const SOFTMAX_COLS: usize = 4;
@@ -74,7 +74,7 @@ fn print_compile_attention_plan() {
 
 fn print_attention_probe() {
     let request = GgmlAttentionPrefillRequest::dense_i8(64, 64);
-    let caps = vortex_capabilities();
+    let caps = DeviceCapabilities::vortex_simx_default();
     let accepted = mandrel_ggml_adapter::can_offload_attention_prefill(request, caps);
 
     println!("adapter backend: {}", backend_name());
@@ -129,7 +129,7 @@ fn print_vortex_attention_plan(title: &str, plan: &VortexAttentionPrefillPlan) {
 fn print_metrics(metrics: KernelMetrics) {
     println!("metrics:");
     println!("  logical_macs: {}", metrics.logical_macs);
-    println!("  scheduled_macs: {}", metrics.scheduled_macs);
+    println!("  lowered_macs: {}", metrics.lowered_macs);
     println!("  kernel_launches: {}", metrics.kernel_launches);
     println!("  workgroup_count: {}", metrics.workgroup_count);
     println!("  thread_count: {}", metrics.thread_count);
@@ -139,9 +139,15 @@ fn print_metrics(metrics: KernelMetrics) {
         "  local_memory_bytes_per_workgroup: {}",
         metrics.local_memory_bytes_per_workgroup
     );
-    if let Some(intensity) = metrics.operational_intensity() {
+    if let Some(intensity) = metrics.logical_operational_intensity() {
         println!(
-            "  operational_intensity_macs_per_byte: {}/{}",
+            "  logical_operational_intensity_macs_per_byte: {}/{}",
+            intensity.numerator, intensity.denominator
+        );
+    }
+    if let Some(intensity) = metrics.lowered_operational_intensity() {
+        println!(
+            "  lowered_operational_intensity_macs_per_byte: {}/{}",
             intensity.numerator, intensity.denominator
         );
     }

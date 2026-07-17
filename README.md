@@ -1,302 +1,191 @@
 # Mandrel
 
-> **Quantify, analyze, and optimize the full hardware/software stack for efficient LLM serving.**
->
-> Mandrel uses LLM serving workloads, starting from attention and KV cache, to turn hardware, memory, runtime, compiler, layout, scheduling, and kernel design choices into measurable experiments on RISC-V/Vortex-like hardware.
+> A serving-driven RISC-V inference hardware/software codesign lab.
 
-Mandrel is not just an attention-kernel demo and not merely a benchmark harness. Its goal is to make the full LLM-serving stack optimizable: define design variables, run executable experiments, collect correctness and trace evidence, analyze bottlenecks, and use the results to drive more efficient hardware/software designs. The current Vortex attention path is the first narrow but real measurement spine.
+Mandrel is building an open laboratory for studying how LLM-serving workloads should shape RISC-V software, compiler targets, Verilog/RTL features, and chip configurations. Its job is to turn a workload, a software design, and a hardware design into one reproducible experiment with explicit binaries, hardware identity, correctness, counters, artifacts, and evidence class.
 
-```text
-Measure the stack. Explain the bottleneck. Optimize the design.
-```
+The long-term goal is ambitious but narrow: make attention and KV-cache workloads executable across an open Vortex-based stack, then use controlled experiments to design better schedules, LLVM support, RTL primitives, memory systems, and chips.
 
-## Mission
+Mandrel is not a production serving framework, an automatic optimizer, or a claim of leading performance. Researchers choose hypotheses and design points; Mandrel makes those choices executable and auditable.
 
-Mandrel exists to quantify, analyze, and maximize LLM-serving efficiency across the hardware/software stack — chip architecture, memory hierarchy, KV layout, data movement, runtime/driver behavior, compiler lowering, scheduling policy, and kernels.
+![Mandrel serving-driven RISC-V inference codesign architecture](docs/assets/mandrel-codesign-architecture.svg)
 
-The project currently focuses on Vortex/RISC-V GPGPU because it provides an open, inspectable target where design ideas can be made executable. The long-term goal is a reproducible optimization loop where LLM-serving workloads drive design-space exploration and full-stack efficiency decisions with correctness checks, measurable traces, and experiment reports.
+## Current reality
 
-Read the full mission: [`docs/mission.md`](docs/mission.md).
+Mandrel currently has one end-to-end executable baseline:
 
-## Quantitative architecture method for AI workloads
+- workload: dense, serving-motivated `attention_prefill_i8`;
+- schedule: `dense_scalar_two_pass_4x1x64`;
+- structure: `query_tile=4`, scalar `key_tile=1`, `head_dim_tile=64`;
+- memory: direct global-memory access and `0 B` local memory per workgroup;
+- code path: Rust plan → textual LLVM-dialect MLIR → LLVM IR → RISC-V object → startup-aware ELF → `.vxbin`;
+- execution: Vortex SimX through the Vortex runtime;
+- validation: exact comparison against a Rust host reference;
+- evidence: launch/transfer events and SimX `PERF` instructions, cycles, and IPC;
+- outputs: a versioned JSON result and a one-row CSV summary.
 
-Mandrel follows the spirit of the quantitative approach to computer architecture: optimize systems by measuring real workloads, making design alternatives explicit, comparing them with objective metrics, and using the results to guide the next design.
+This baseline proves the executable spine and correctness contract. It is not yet serving-faithful prefill/decode, paged attention, a structural key-tiled online-softmax kernel, an RTL result, an FPGA measurement, or a PPA result. SimX cycles are simulator observations, not chip performance.
 
-For AI serving, that loop becomes:
+## The focused research question
 
-```text
-AI workload and algorithm shape
-  -> measurable design variables
-  -> hardware, memory, runtime, compiler, schedule, and kernel choices
-  -> executable artifact or calibrated model
-  -> correctness, counters, traces, and derived metrics
-  -> bottleneck and sensitivity analysis
-  -> hardware guidance and algorithm feedback
-  -> next co-designed workload/hardware iteration
-```
+Mandrel asks one recurring question:
 
-This means Mandrel should eventually answer questions in both directions:
+> For a serving workload and a fixed correctness contract, which combination of software lowering and realizable RISC-V/Vortex hardware produces the best measured tradeoff, and why?
 
-- **Hardware direction:** which ISA, memory hierarchy, local-memory, cache, page-table, DMA/copy, barrier, or runtime features improve serving efficiency?
-- **Software/runtime direction:** which layouts, schedules, batching policies, compression policies, and lowering strategies best fit a target?
-- **Algorithm direction:** which model/attention/KV choices are hardware-friendly enough to justify algorithmic adoption or redesign?
+That question is studied across four coupled surfaces:
 
-## Why Mandrel
+1. **Workload and operator semantics** — prefill, decode, causal masking, GQA/MQA, paged KV, quantization, and serving replay.
+2. **Software design** — schedule, tiling, work assignment, memory movement, kernel IR, MLIR lowering, LLVM target support, and runtime behavior.
+3. **Hardware design** — Vortex parameters, TCU, DXA, local memory, caches, new RTL primitives, RTLSim, FPGA, and synthesis/PPA.
+4. **Evidence** — exact correctness, requested/realized/observed target facts, source/build identities, artifacts, counters, events, and controlled ablations.
 
-Modern LLM serving is dominated by CUDA-centric kernel infrastructure and framework-specific heuristics. To maximize efficiency on open hardware, we need more than isolated microbenchmarks: we need realistic workload paths that expose attention, KV cache, copies, communication, runtime overhead, memory hierarchy, scheduling policy, compiler lowering, and kernel implementation decisions as comparable design variables.
+## Codesign architecture
 
-Mandrel starts from the hardest useful slice, then grows it into a full-stack design-space optimizer:
-
-- **Attention/KV first**: dense `attention_prefill_i8` is the active executable baseline; paged KV legality and serving-shaped memory are next.
-- **Design variables first**: layouts, tiles, runtime shapes, target assumptions, memory movement, and lowering policies should be explicit experiment knobs.
-- **Compiler/runtime together**: model IR, schedule metadata, ABI/layout validation, MLIR generation, artifacts, runtime launch, and traces live in one Rust workspace.
-- **Vortex/RISC-V first**: generated device code targets the Vortex toolchain and runs through `simx` today.
-- **Correctness first**: generated kernels are compared against a Rust host reference.
-- **Quantification first**: runtime shape, launch, transfer, cache, counters, workload, wall-time, correctness, derived metrics, and experiment summaries are persisted as JSONL evidence.
-
-## Current executable spine
-
-![Mandrel workload-driven codesign spine](docs/assets/mandrel-codesign-spine.svg)
-
-Today this spine is implemented for dense attention prefill:
+Mandrel has one experiment plane and two artifact-producing branches:
 
 ```text
-AttentionOp::prefill_i8_demo
-  -> dense online-softmax schedule
-  -> VortexAttentionPrefillPlan
-  -> ABI/layout metadata validation
-  -> LLVM dialect MLIR
-  -> Vortex LLVM object, ELF, and vxbin
-  -> Vortex simx runtime launch
-  -> host reference compare
-  -> JSONL trace history, experiment result, and deltas
+software branch:
+  serving workload
+    -> target-aware schedule
+    -> executable kernel IR
+    -> structured MLIR
+    -> LLVM / Vortex target support
+    -> RISC-V object / ELF / vxbin
+
+hardware branch:
+  hardware design spec
+    -> resolved Vortex configuration
+    -> generated Verilog configuration
+    -> SimX / RTL simulation / FPGA / synthesized netlist
+
+experiment plane:
+  workload + software design + hardware design + toolchain identity
+    -> compatibility and correctness gates
+    -> counters, events, artifacts, provenance, CSV/JSON report
+    -> human analysis and the next explicit experiment
 ```
 
-## What works today
+LLVM does not lower directly into Verilog. LLVM owns target-facing ISA, ABI, intrinsics, instruction selection, register constraints, and scheduling models. RTL and chip design are a separate branch resolved from the same experiment manifest. The executable binary and matching realized hardware meet at execution and evidence collection.
 
-| Area | Current state |
-| --- | --- |
-| Workload | Dense `attention_prefill_i8` baseline with runtime shape overrides. |
-| Schedule | Dense KV layout, online max/sum softmax strategy, `4x16x64` tile metadata. |
-| ABI/layout metadata | Buffer slots, scalar arg indices, dense row-major strides, quantization, runtime shape policy, and KV policy are validated at codegen/runtime gates. |
-| Codegen | Rust plan emits LLVM dialect MLIR for Vortex. Current generated attention lowering is a dense scalar two-pass stable-softmax baseline; `key_tile` is metadata/ABI today, not yet a structural key-block loop. |
-| Artifact pipeline | MLIR validates through `mlir-translate`, Vortex `clang`, `.o`, startup-aware `.elf`, and `.vxbin` packaging. |
-| Runtime | `VortexBackend` wraps runtime/device/queue, artifact lookup, kernel cache, launch, transfers, and readback. |
-| Correctness | Device output is compared against a Rust host reference. |
-| Observability | `PERF`, launch dimensions, transfer bytes, cache hits, workload bytes/elements, logical MACs, wall time, correctness, derived ratios, trace JSONL, and companion experiment-result JSONL. |
-| Experiment model | `mandrel-experiment` provides first-pass `ExperimentSpec`, `ExperimentResult`, target/memory specs, correctness records, and runtime-event records. |
-| CLI | `xtask` is modularized and exposed through `clap` commands such as `cargo vortex-run-attention`. |
-| Next | True runtime event emission, target/memory spec unification, Paged KV legality planning, and dense key-tiled online lowering. |
+See [`docs/codesign-architecture.md`](docs/codesign-architecture.md) for the full design.
 
-## How to read the current output
+## Near-term proof point
 
-Mandrel's output is meant to explain the whole spine, not only say that a kernel ran. A recent local `cargo vortex-run-attention` run shows four kinds of evidence.
+The first codesign study is deliberately conservative:
 
-### 1. Flow gates
+1. materialize tracked Vortex hardware configurations;
+2. run the same attention baseline through matching SimX and RTL configurations;
+3. enable and expose existing Vortex TCU and DXA mechanisms;
+4. compare software-only, hardware-only, and matched software+hardware design points;
+5. add formal LLVM support only after helper-call/inline-assembly paths validate semantics;
+6. use the evidence to choose one narrow Mandrel-specific RTL primitive, such as a reduction or packed-dot operation.
+
+This sequence avoids building a monolithic attention accelerator before the experiment and compiler contracts are credible.
+
+## Experiment output
+
+`cargo vortex-run-attention` prints a `perf stat`-style terminal summary and writes:
 
 ```text
-attention.runtime: compiling attention launch plan
-attention.runtime: validating attention ABI/layout metadata
-attention.runtime: building deterministic attention input
-attention.runtime: runtime shape compiled=64x64 default=8x16 actual=8x16 tile(query=4, key=16, head_dim=64)
-attention.runtime: backend transfers host_to_device=384B device_to_host=128B total=512B
-attention.runtime: execution shape workgroups=16 threads_per_workgroup=16 total_threads=256
-attention.runtime: compare summary elements=128 mismatches=0 status=exact
-attention runtime correctness PASSED
+target/mandrel/vortex/attention_prefill_i8.experiment.json
+target/mandrel/vortex/attention_prefill_i8.experiment.csv
 ```
 
-What this means:
+The JSON result is the complete machine-readable record. The CSV contains one row of core fields for scripts, notebooks, and manually curated comparisons. Mandrel does not automatically choose a historical baseline or infer the next optimization.
 
-| Line | Why it matters |
-| --- | --- |
-| `compiling attention launch plan` | The workload is represented as a Rust plan, not manually launched as an opaque binary. |
-| `validating attention ABI/layout metadata` | Buffer slots, scalar arg indices, dense row-major layout, quantization, KV policy, and runtime shape are checked before codegen/runtime use them. |
-| `compiled=64x64 ... actual=8x16` | The generated kernel has a compiled maximum shape while the smoke uses a smaller runtime prefix. This is the first step toward serving-shaped runtime variation. |
-| `host_to_device=384B device_to_host=128B` | Data movement is visible. For a codesign lab, copy and memory traffic are first-class signals, not hidden overhead. |
-| `workgroups=16 threads_per_workgroup=16` | The launch maps schedule decisions to hardware execution shape. |
-| `mismatches=0 status=exact` | Correctness is a gate: metric changes are not trusted unless the host reference still matches. |
+Evidence sources remain distinct:
 
-### 2. Runtime trace summary
-
-```text
-attention.runtime trace summary:
-  kernel: attention_prefill_i8
-  runtime: sequence=8 head_dim=16 query_tile=4 key_tile=16
-  compiled: sequence=64 head_dim=64 head_dim_tile=64
-  execution: workgroups=16 threads_per_workgroup=16 total_threads=256 module_cache_hit=false kernel_cache_hit=false
-  workload: logical_macs=2048 q_elements=128 kv_elements=256 output_elements=128
-  memory: q_bytes=128 kv_bytes=256 output_bytes=128 host_to_device_bytes=384 device_to_host_bytes=128 total_transfer_bytes=512
-  counters: instructions=165144 cycles=414598 ipc=0.398
-  derived: instrs/output=1290.188 cycles/output=3239.047 transfer_bytes/output=4.000 cycles/logical_mac=202.440 logical_macs/cycle=0.005 wall_time_ms=362
-```
-
-How to interpret the fields:
-
-| Field group | Meaning | Codesign use |
-| --- | --- | --- |
-| `runtime` | The actual problem shape and tile knobs used for this run. | Lets experiments compare prefill/decode sizes, tile choices, and runtime prefix shapes. |
-| `compiled` | The shape and tile assumptions baked into the generated artifact. | Separates generated-kernel capacity from runtime workload shape. |
-| `execution` | Grid/block-derived workgroups, threads, and cache-hit state. | Connects schedule decisions to runtime launch behavior and module/kernel cache effects. |
-| `workload` | Logical MACs and element counts. | Normalizes performance across shape changes. |
-| `memory` | Logical buffer bytes and observed transfer bytes. | Makes copy/storage costs visible before paged KV and device-device movement are added. |
-| `counters` | Vortex `PERF` instructions, cycles, and IPC. | Gives hardware/runtime evidence instead of relying on estimates. |
-| `derived` | Per-output and per-MAC ratios. | Makes latest-vs-previous comparisons meaningful even when workload shape changes. |
-
-### 3. Experiment result
-
-```text
-attention.experiment result:
-  spec_id: attention_prefill_i8_vortex_smoke
-  status: Succeeded
-  events: 6
-  total_transfer_bytes: 512
-  correctness: passed=true compared_elements=128 mismatches=0
-attention.experiment result jsonl: target/mandrel/vortex/attention_prefill_i8.experiment.jsonl
-```
-
-The first-pass experiment result converts the runtime trace into a stable experiment object. Today the event list is compact and summary-derived:
-
-```text
-copy -> kernel_launch -> sync -> copy -> perf_counter -> correctness_check
-```
-
-This is intentionally small. The next step is to emit true allocation, copy, launch, sync, and cache events from runtime boundaries rather than deriving them from summary fields.
-
-### 4. History and deltas
-
-```text
-cargo vortex-trace-attention
-
-records: 6 (showing latest 5)
-delta latest vs previous:
-  instrs: +0 (+0.00%) latest=165144
-  cycles: +0 (+0.00%) latest=414598
-  total_transfer_bytes: +0 (+0.00%) latest=512
-  wall_time_ms: -1 (-0.28%) latest=358
-  ipc: +0.000 (+0.00%) latest=0.398
-  instrs/output: +0.000 (+0.00%) latest=1290.188
-  cycles/output: +0.000 (+0.00%) latest=3239.047
-  transfer_bytes/output: +0.000 (+0.00%) latest=4.000
-  cycles/logical_mac: +0.000 (+0.00%) latest=202.440
-  logical_macs/cycle: +0.000 (+0.00%) latest=0.005
-```
-
-This is the start of the lab loop: change a schedule, ABI, memory model, runtime policy, or kernel lowering, then compare the new trace against history. Exact wall time varies by host and build state; cycle/instruction values come from Vortex `PERF` output for the current smoke.
+| Evidence class | Meaning |
+|---|---|
+| Static model | Logical/lowered work and traffic estimates. |
+| SimX observation | Functional simulator counters and runtime events. |
+| RTL simulation | Cycle/event evidence from matching RTL. Planned. |
+| FPGA measurement | Measurements from a versioned bitstream and board setup. Planned. |
+| Synthesis estimate | Timing, area, and power methodology tied to a netlist. Planned. |
+| Silicon measurement | Not currently available. |
 
 ## Quick start
 
-Inspect the local Vortex setup:
+Basic workspace validation:
 
 ```sh
-cargo vortex-status
+cargo fmt --all -- --check
+cargo check --workspace --all-targets --all-features --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-targets --all-features --locked
+cargo no-std-check
 ```
 
-Build/install the source toolchain when needed:
-
-```sh
-cargo vortex-toolchain-source
-cargo vortex-install
-```
-
-Inspect, generate, run, and review the current attention path:
+Inspect and run the current attention path:
 
 ```sh
 cargo vortex-plan-attention
 cargo vortex-generate-attention
 cargo vortex-run-attention
-cargo vortex-trace-attention
 ```
 
-Useful runtime knobs:
+The Vortex commands require the configured Vortex checkout, LLVM toolchain, runtime, and SimX build. Use the setup/status commands when preparing a new environment:
 
 ```sh
-MANDREL_ATTENTION_RUNTIME_SEQUENCE=64 \
-MANDREL_ATTENTION_RUNTIME_HEAD_DIM=64 \
-cargo vortex-run-attention
-
-MANDREL_ATTENTION_RUNTIME_SCALAR_LAUNCH=1 cargo vortex-run-attention
+cargo vortex-fetch
+cargo vortex-system-tools
+cargo vortex-install
+cargo vortex-env
+cargo vortex-status
 ```
 
-## Workspace map
+The primary integration gate is `cargo vortex-run-attention`: it regenerates the device artifact, validates plan/ABI constraints, launches SimX, exact-compares the output, prints counter statistics, and writes JSON/CSV evidence.
+
+## Repository map
 
 ```text
 crates/
-  core/             shared shape, dtype, and layout descriptors
-  model-ir/         attention and LLM operator IR
-  schedule/         attention tiling, layouts, and schedule candidates
-  compiler/         model-ir + schedule -> Vortex kernel plans
-  kernel-ir/        kernel symbols, signatures, and launch descriptors
-  profiler/         estimates, runtime trace parsing, and counters
-  experiment/       experiment specs/results, target/memory specs, correctness, runtime events
-  device/           device capabilities, memory spaces, buffers, and command buffers
-  vortex-backend/   Vortex codegen, ABI validation, artifacts, runtime wrapper, and C ABI
-  runtime/          higher-level runtime-facing surfaces and fixtures
-  kernels/          kernel catalog and CPU/reference-side helpers
-  ggml-adapter/     conservative ggml-style attention probe boundary
-  xtask/            clap CLI, toolchain, status, generation, runtime, trace commands
-docs/
-  mission.md        project mission and codesign framing
-  roadmap.md        active milestones and short-term priorities
-  design.md         design notes
-  mlir.md           MLIR notes
-  llm-serving-kv-attention-survey.md
-                    survey of LLM serving, KV, attention systems, and Mandrel mapping
-external/           local Vortex/LLVM checkouts and builds
+  model-ir/           workload and operator semantics
+  schedule/           target-aware schedule selection
+  kernel-ir/          kernel catalog, ABI, and launch descriptors
+  target-ir/          canonical target facts and kernel requirements
+  compiler/           workload/schedule to executable Vortex plans
+  vortex-codegen/     plan validation, device IR, and MLIR generation
+  artifact/           artifact identities, sets, paths, and registries
+  hardware/           hardware design and realization schemas
+  vortex-backend/     Vortex runtime, execution, FFI, and host toolchain driver
+  experiment/         experiment specs, events, correctness, and results
+  profiler/           static estimates and runtime counter parsing
+  runtime/            host/runtime scaffolding
+  kernels/            host reference kernels
+  ggml-adapter/       narrow integration probe
+  xtask/              reproducible project and Vortex commands
+
+hardware/vortex/
+  source.lock.toml     pinned Vortex and LLVM-Vortex source identities
+  configs/             tracked hardware design points
+  patches/             reviewed Mandrel-specific RTL/simulator patches
+
+experiments/           human-authored study manifests and publication bundles
+docs/                  mission, architecture, roadmap, toolchain notes, survey
+external/              materialized upstream checkouts and builds
+target/mandrel/         generated artifacts and experiment outputs
 ```
 
-## Codesign axes
+The current `kernel-ir` is still mostly interface/ABI/launch IR; computation is generated directly from compiler plans into an internal Vortex device IR and textual LLVM-dialect MLIR. A structured compute IR and structured MLIR pipeline are roadmap work, not current claims.
 
-Mandrel is being shaped around full-stack design variables and efficiency objectives:
+## Design rules
 
-| Layer | Design-space question | Efficiency objective |
-| --- | --- | --- |
-| Chip/target | Which RISC-V/Vortex execution resources matter for attention and KV paths? | Higher utilization and lower cycles/token. |
-| Memory/storage | How should dense/paged KV, local memory, cache behavior, and page tables be modeled? | Lower bytes/token, fragmentation, and memory stalls. |
-| Data movement | Which copies, layout transforms, compression, and future overlaps dominate serving paths? | Lower transfer bytes and hidden/overlapped movement. |
-| Runtime/driver | How do allocation, launch, queue, sync, module cache, and transfer overhead affect decode/prefill? | Lower TTFT/TPOT and runtime overhead. |
-| Compiler | How should semantic/layout metadata lower into target-specific loops and memory movement? | Better codegen choices per target. |
-| Scheduling/layout | Which tiling, batching, P/D phase, and work-assignment policies fit the target? | Better goodput under latency and memory constraints. |
-| Kernels/operators | Which attention, softmax, reduction, copy, and KV primitives are worth specializing? | Higher throughput per watt/area/cycle where measurable. |
-| Observability/optimization | Can every design change be explained and compared through correctness, trace, and derived metrics? | A repeatable path from measurement to improved design. |
+- Preserve one exact-correct executable attention spine while changing the stack around it.
+- Derive compiler-facing target facts from a tracked hardware design, not duplicated constants.
+- Record requested, realized, and observed target identities separately.
+- Separate exact hardware identity from the weaker question “can this kernel legally run?”
+- Keep attention/KV policy in Mandrel; keep ISA/ABI/instruction machinery in LLVM.
+- Validate upstream TCU/DXA before adding new RTL.
+- Do not compare static, SimX, RTL, FPGA, synthesis, and silicon evidence as if they were interchangeable.
+- Do not automate research judgment. Generate evidence that a researcher can inspect and defend.
 
-## Roadmap snapshot
+## Documentation
 
-The current near-term track is:
-
-1. **Executable attention spine**: done for dense `attention_prefill_i8` on Vortex `simx`.
-2. **Runtime trace loop**: done for current smoke, with JSONL history, correctness, and derived metrics.
-3. **Experiment skeleton**: in progress; current attention trace can derive and write a companion `ExperimentResult` JSONL.
-4. **Runtime event model**: in progress; current event list is summary-derived, true runtime-boundary events are next.
-5. **ABI/layout metadata gates**: in progress; codegen/runtime validate the current dense attention ABI and reject unsupported Paged KV metadata.
-6. **Target/memory specs and Paged KV legality**: next; model target facts, page tables, GQA/ragged-tail legality, and unsupported layouts before lowering.
-7. **Dense key-tiled online lowering**: next; make `key_tile` structural in MLIR, then add online max/sum/accumulator state.
-
-See [`docs/roadmap.md`](docs/roadmap.md) for details.
-
-## Community direction
-
-Mandrel is designed to sit below, not replace, serving/runtime projects:
-
-- **RISC-V / open hardware**: provide workload-driven feedback from real LLM kernels.
-- **SGLang-class serving**: use prefill/decode, paged KV, and batching shapes as north-star workloads.
-- **llama.cpp / ggml-style runtimes**: provide a future conservative C/C++ boundary for one-op backend probes and local-inference experiments.
-
-The intended contribution is a transparent full-stack optimization loop: generated kernels, artifacts, correctness, traces, and reports that explain how open AI hardware behaves under LLM-serving pressure and which design changes improve efficiency.
-
-## Validation
-
-Recent local validation includes:
-
-```sh
-cargo fmt --check
-cargo check -p mandrel-kernel-ir -p mandrel-schedule -p mandrel-profiler -p mandrel-experiment -p mandrel-compiler -p mandrel-vortex-backend -p mandrel-ggml-adapter -p mandrel-kernels -p mandrel-runtime -p xtask
-cargo test -p mandrel-kernel-ir -p mandrel-schedule -p mandrel-profiler -p mandrel-experiment -p mandrel-compiler -p mandrel-vortex-backend -p mandrel-ggml-adapter -p mandrel-kernels -p mandrel-runtime -p xtask
-cargo vortex-run-attention
-cargo vortex-trace-attention
-```
-
-The Vortex runtime smoke requires a local Vortex toolchain/runtime under `external/` or equivalent environment configuration.
-
-## Status
-
-Mandrel is early and intentionally narrow in implementation, but broad in purpose. The project currently prioritizes one hard vertical slice over many shallow demos. The goal is to keep the attention path executable while gradually turning hardware target specs, memory systems, copies, communication, runtime events, scheduling/layout policies, and experiment reports into first-class objects for full-stack efficiency optimization.
+- [`docs/mission.md`](docs/mission.md) — stable mission, principles, and non-goals.
+- [`docs/codesign-architecture.md`](docs/codesign-architecture.md) — software/hardware architecture and experiment contract.
+- [`docs/roadmap.md`](docs/roadmap.md) — phased implementation and evidence gates.
+- [`docs/mlir.md`](docs/mlir.md) — current MLIR/LLVM/Vortex artifact path.
+- [`docs/llm-serving-kv-attention-survey.md`](docs/llm-serving-kv-attention-survey.md) — literature survey and design hypotheses.
+- [`hardware/vortex/README.md`](hardware/vortex/README.md) — tracked Vortex hardware inputs.
+- [`experiments/README.md`](experiments/README.md) — experiment and report policy.

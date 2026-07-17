@@ -1,9 +1,8 @@
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-
-use tracing_appender::non_blocking::WorkerGuard;
+use std::sync::Mutex;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -30,7 +29,7 @@ impl LogFormat {
     }
 }
 
-pub(crate) fn init_logging() -> Result<Option<WorkerGuard>> {
+pub(crate) fn init_logging() -> Result<()> {
     let filter = env::var("MANDREL_LOG").unwrap_or_else(|_| "info".to_owned());
     let filter =
         EnvFilter::try_new(filter).map_err(|error| format!("invalid MANDREL_LOG: {error}"))?;
@@ -44,20 +43,18 @@ pub(crate) fn init_logging() -> Result<Option<WorkerGuard>> {
                 parent.display()
             )
         })?;
-        let file_name = file_path.file_name().ok_or_else(|| {
-            format!(
-                "MANDREL_LOG_FILE must point to a file, got '{}'",
-                file_path.display()
-            )
-        })?;
-        let file_appender = tracing_appender::rolling::never(parent, Path::new(file_name));
-        let (writer, guard) = tracing_appender::non_blocking(file_appender);
-        install_subscriber(filter, format, writer, false)?;
-        return Ok(Some(guard));
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file_path)
+            .map_err(|error| {
+                format!("failed to open log file '{}': {error}", file_path.display())
+            })?;
+        install_subscriber(filter, format, Mutex::new(file), false)?;
+        return Ok(());
     }
 
-    install_subscriber(filter, format, io::stdout, true)?;
-    Ok(None)
+    install_subscriber(filter, format, io::stdout, true)
 }
 
 fn non_empty_parent(path: &Path) -> &Path {

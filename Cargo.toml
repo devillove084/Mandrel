@@ -3,14 +3,18 @@ name = "mandrel"
 version = "0.1.0"
 edition = "2024"
 description = "Rust-first RISC-V GPGPU stack co-design workspace"
+license.workspace = true
 publish = false
+rust-version.workspace = true
 
 [workspace]
 members = [
+    "crates/artifact",
     "crates/compiler",
     "crates/core",
     "crates/device",
     "crates/experiment",
+    "crates/hardware",
     "crates/ggml-adapter",
     "crates/kernel-ir",
     "crates/kernels",
@@ -18,7 +22,9 @@ members = [
     "crates/profiler",
     "crates/runtime",
     "crates/schedule",
+    "crates/target-ir",
     "crates/vortex-backend",
+    "crates/vortex-codegen",
     "crates/xtask",
 ]
 resolver = "3"
@@ -31,10 +37,12 @@ publish = false
 rust-version = "1.85"
 
 [workspace.dependencies]
+mandrel-artifact = { path = "crates/artifact", default-features = false }
 mandrel-compiler = { path = "crates/compiler", default-features = false }
 mandrel-core = { path = "crates/core", default-features = false }
 mandrel-device = { path = "crates/device", default-features = false }
 mandrel-experiment = { path = "crates/experiment", default-features = false }
+mandrel-hardware = { path = "crates/hardware", default-features = false }
 mandrel-ggml-adapter = { path = "crates/ggml-adapter", default-features = false }
 mandrel-kernel-ir = { path = "crates/kernel-ir", default-features = false }
 mandrel-kernels = { path = "crates/kernels", default-features = false }
@@ -42,11 +50,12 @@ mandrel-model-ir = { path = "crates/model-ir", default-features = false }
 mandrel-profiler = { path = "crates/profiler", default-features = false }
 mandrel-runtime = { path = "crates/runtime", default-features = false }
 mandrel-schedule = { path = "crates/schedule", default-features = false }
+mandrel-target-ir = { path = "crates/target-ir", default-features = false }
 mandrel-vortex-backend = { path = "crates/vortex-backend" }
+mandrel-vortex-codegen = { path = "crates/vortex-codegen" }
 clap = { version = "4.5", features = ["derive"] }
 snafu = { version = "0.8", default-features = false }
 tracing = "0.1"
-tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 
 [workspace.lints.rust]
@@ -91,6 +100,7 @@ mandrel-model-ir = { workspace = true }
 mandrel-profiler = { workspace = true }
 mandrel-runtime = { workspace = true }
 mandrel-schedule = { workspace = true }
+mandrel-target-ir = { workspace = true }
 mandrel-vortex-backend = { workspace = true }
 
 [lints]

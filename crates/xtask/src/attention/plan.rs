@@ -1,19 +1,56 @@
 use mandrel_compiler::{
-    AttentionKvCacheMetadata, VortexAttentionPrefillPlan, compile_vortex_attention_prefill_kernel,
+    AttentionKvCacheMetadata, VortexAttentionPrefillPlan,
+    compile_vortex_attention_prefill_kernel_for_target,
 };
+use mandrel_experiment::ExperimentSpec;
 use mandrel_model_ir::AttentionOp;
+use mandrel_target_ir::{TargetConstraints, TargetSpec};
 
 use crate::Result;
 
+use super::input::attention_runtime_extent_from_env;
+
+const ATTENTION_COMPILED_SEQUENCE: usize = 64;
+const ATTENTION_COMPILED_HEAD_DIM: usize = 64;
+const ATTENTION_DEFAULT_RUNTIME_SEQUENCE: usize = 8;
+const ATTENTION_DEFAULT_RUNTIME_HEAD_DIM: usize = 16;
+
 pub(crate) fn print_attention_prefill_plan() -> Result<()> {
-    let plan = current_attention_prefill_plan()?;
+    let spec = current_attention_experiment_spec()?;
+    let plan = current_attention_prefill_plan(spec)?;
     print_attention_plan("Vortex attention-prefill plan", &plan);
     Ok(())
 }
 
-pub(crate) fn current_attention_prefill_plan() -> Result<VortexAttentionPrefillPlan> {
-    Ok(compile_vortex_attention_prefill_kernel(
+pub(crate) fn current_attention_experiment_spec() -> Result<ExperimentSpec> {
+    let sequence = attention_runtime_extent_from_env(
+        "MANDREL_ATTENTION_RUNTIME_SEQUENCE",
+        ATTENTION_DEFAULT_RUNTIME_SEQUENCE,
+        ATTENTION_COMPILED_SEQUENCE,
+    )?;
+    let head_dim = attention_runtime_extent_from_env(
+        "MANDREL_ATTENTION_RUNTIME_HEAD_DIM",
+        ATTENTION_DEFAULT_RUNTIME_HEAD_DIM,
+        ATTENTION_COMPILED_HEAD_DIM,
+    )?;
+    Ok(ExperimentSpec::attention_prefill_i8_vortex_smoke(
+        sequence, head_dim,
+    ))
+}
+
+pub(crate) fn current_attention_prefill_plan(
+    spec: ExperimentSpec,
+) -> Result<VortexAttentionPrefillPlan> {
+    compile_attention_prefill_plan_for_target(spec.target)
+}
+
+fn compile_attention_prefill_plan_for_target(
+    target: TargetSpec,
+) -> Result<VortexAttentionPrefillPlan> {
+    let constraints = TargetConstraints::from_device_capabilities(target.device_capabilities());
+    Ok(compile_vortex_attention_prefill_kernel_for_target(
         AttentionOp::prefill_i8_demo(),
+        constraints,
     )?)
 }
 
@@ -56,7 +93,7 @@ pub(crate) fn print_attention_plan(title: &str, plan: &VortexAttentionPrefillPla
     print_attention_metadata(plan);
     println!("metrics:");
     println!("  logical_macs: {}", plan.metrics.logical_macs);
-    println!("  scheduled_macs: {}", plan.metrics.scheduled_macs);
+    println!("  lowered_macs: {}", plan.metrics.lowered_macs);
     println!("  kernel_launches: {}", plan.metrics.kernel_launches);
     println!("  workgroup_count: {}", plan.metrics.workgroup_count);
     println!("  thread_count: {}", plan.metrics.thread_count);
@@ -69,9 +106,15 @@ pub(crate) fn print_attention_plan(title: &str, plan: &VortexAttentionPrefillPla
         "  local_memory_bytes_per_workgroup: {}",
         plan.metrics.local_memory_bytes_per_workgroup
     );
-    if let Some(intensity) = plan.metrics.operational_intensity() {
+    if let Some(intensity) = plan.metrics.logical_operational_intensity() {
         println!(
-            "  operational_intensity_macs_per_byte: {}/{}",
+            "  logical_operational_intensity_macs_per_byte: {}/{}",
+            intensity.numerator, intensity.denominator
+        );
+    }
+    if let Some(intensity) = plan.metrics.lowered_operational_intensity() {
+        println!(
+            "  lowered_operational_intensity_macs_per_byte: {}/{}",
             intensity.numerator, intensity.denominator
         );
     }

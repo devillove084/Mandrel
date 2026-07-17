@@ -1,122 +1,84 @@
 # Mission
 
-Mandrel exists to quantify, analyze, and maximize LLM-serving efficiency across the full hardware/software stack: chip architecture, memory hierarchy, KV layout, data movement, runtime/driver interfaces, scheduling policy, compiler lowering, and operator kernels.
+Mandrel is a serving-driven RISC-V inference hardware/software codesign lab.
 
-It is not just an attention-kernel demo. The current Vortex attention path is the first executable measurement spine of a broader workload-driven full-stack design-space optimization system.
+Its mission is to make a narrow but important class of research experiments executable and reproducible:
 
-## Vision
+> Start from attention and KV-cache behavior observed in LLM serving, vary software and realizable Vortex/RISC-V hardware together, and produce enough correctness, provenance, artifact, counter, RTL, and PPA evidence for a researcher to defend a codesign conclusion.
 
-Open AI accelerators should be evaluated and improved with modern serving workloads, not only microbenchmarks. Mandrel aims to make RISC-V/Vortex-like hardware a measurable, programmable, and optimizable target for LLM-serving systems.
+## Why Mandrel exists
 
-The long-term vision is:
+Open RISC-V accelerator projects provide CPUs, GPUs, RTL, simulators, compilers, FPGA flows, and synthesis tools. LLM serving systems provide demanding workloads and sophisticated attention/KV strategies. What remains difficult is running a controlled experiment that binds all of these facts at once:
 
-> A reproducible optimization loop, in the spirit of the quantitative approach to computer architecture, where LLM-serving workloads expose design-space variables, quantify bottlenecks, and drive the joint improvement of open accelerator chips, driver/runtime interfaces, compiler stacks, kernels, memory systems, copies, scheduling, communication, and algorithm choices.
+- exact workload semantics and shape;
+- schedule and kernel lowering;
+- compiler target and executable binary;
+- hardware source, configuration, RTL/build identity, and backend;
+- correctness and failure outcome;
+- evidence class and metric provenance;
+- artifacts that another researcher can rebuild and inspect.
 
-## Mission statement
+Mandrel focuses on that binding.
 
-Mandrel is a workload-driven full-stack design-space quantification, analysis, and optimization system for open AI accelerators. It starts from LLM attention and KV cache because they stress the real boundaries between compute, memory, data movement, scheduling, and runtime overhead. The project uses an executable Vortex/RISC-V GPGPU path to turn design ideas into correctness results, traces, metrics, bottleneck analysis, and reports.
+## Scope
 
-## Current executable spine
-
-The first spine is intentionally narrow but real:
+The research scope spans two branches:
 
 ```text
-Attention workload
-  -> Rust model IR and schedule metadata
-  -> Vortex kernel plan and ABI/layout validation
-  -> LLVM dialect MLIR
-  -> Vortex LLVM object, ELF, and vxbin artifacts
-  -> Vortex simx runtime launch
-  -> host-reference correctness
-  -> PERF, transfer, workload, and history traces
+software:
+  workload -> schedule -> kernel IR -> MLIR -> LLVM -> RISC-V binary
+
+hardware:
+  design spec -> Vortex configuration -> SimX / RTL / FPGA / netlist
 ```
 
-This gives Mandrel a stable place to test cross-layer ideas without waiting for a complete custom chip, driver, or production serving runtime.
+The branches meet at a versioned experiment, not through an imagined LLVM-to-Verilog lowering.
 
-## Codesign layers
+The initial workload family is attention and KV cache because it exposes computation, reduction, data movement, irregular memory, serving phase, and hardware scheduling choices in one place. The project may use narrow MoE or framework probes, but they do not displace attention/KV as the primary codesign axis.
 
-| Layer | What Mandrel wants to test | Current foothold |
-| --- | --- | --- |
-| Workload | How LLM serving shapes stress hardware and runtime | Dense `attention_prefill_i8`; paged KV next |
-| Operators | Attention, softmax/reduction, KV read/write, copy, layout transform | Attention prefill and planned softmax/reduction |
-| Compiler | How semantic/layout/schedule metadata lowers to target kernels | Rust plan -> LLVM dialect MLIR |
-| Kernel ABI | How buffer slots, scalar args, layouts, and runtime shape policies stay consistent | ABI/layout validation gates |
-| Runtime/driver | How launch, allocation, copy, sync, cache, and events affect serving kernels | Vortex runtime wrapper and launch traces |
-| Memory/storage | How KV cache, paging, local memory, and transfer paths shape performance | Dense KV metadata; paged KV legality next |
-| Data movement | How host-device/device-device copies, layout movement, and future overlap should be modeled | Transfer byte traces today |
-| Hardware target | Which RISC-V/Vortex features matter for attention and KV workloads | Vortex simx and source toolchain |
-| Optimization loop | Whether a design change can be measured, explained, compared, and improved | JSONL trace history, experiment results, and derived metrics |
+## Current foothold
 
-## Why LLM serving
+Today Mandrel executes one dense `attention_prefill_i8` baseline on Vortex SimX. It generates LLVM-dialect MLIR and RISC-V artifacts, launches the `.vxbin`, exact-compares against a Rust reference, prints SimX counter statistics, and writes JSON/CSV results.
 
-LLM serving is a pressure test for AI systems design:
+The current kernel is scalar, two-pass, direct-global, and uses no local-memory staging. It is infrastructure evidence, not a production-serving or hardware-performance result.
 
-- Prefill stresses parallel attention, memory bandwidth, reductions, and local-memory staging.
-- Decode stresses small-batch latency, KV-cache reads, page lookup, copy overhead, and launch/runtime overhead.
-- Paged KV exposes storage layout, indirection, gather/scatter, and cache behavior.
-- Serving runtimes such as SGLang and llama.cpp/ggml provide concrete workload shapes and integration targets.
+## Principles
 
-Mandrel uses these workloads to ask and answer hardware/software/algorithm optimization questions that microbenchmarks alone cannot answer.
+1. **One trustworthy vertical slice before breadth.** Keep the attention path correct and executable while extending compiler and hardware depth.
+2. **Serving semantics before benchmark theater.** Causal behavior, prefill/decode, head structure, GQA/MQA, paged KV, and replay shape must become explicit.
+3. **Hardware facts have identities.** Source revision, resolved configuration, build, compiler target, and execution backend are part of the experiment.
+4. **Legality is not identity.** A kernel may run on a non-identical target; exact target matching and requirement satisfaction are separate contracts.
+5. **Evidence classes never collapse.** Static estimates, SimX, RTL, FPGA, synthesis, and silicon mean different things.
+6. **LLVM owns target machinery, not model policy.** ISA, ABI, intrinsics, instruction selection, registers, MC support, and scheduling models belong in LLVM; attention/KV schedule policy remains in Mandrel.
+7. **Use upstream hardware before inventing hardware.** Validate Vortex TCU and DXA, then add a narrow RTL primitive only when workload evidence justifies it.
+8. **Experiments are human decisions.** Mandrel generates artifacts and reports; it does not automatically choose baselines, rank research ideas, or prescribe the next design.
+9. **A result includes failures.** Unsupported target requirements, compilation errors, runtime errors, and correctness failures are first-class outcomes.
+10. **No novelty by adjective.** Claims must be bounded by the measured workload, target, backend, evidence class, and related work.
 
-## Relationship to communities
+## What success looks like
 
-### RISC-V and open hardware
+A successful Mandrel study can answer:
 
-Mandrel should produce quantitative workload-driven feedback for open AI hardware:
+- Which software and hardware variables changed?
+- Was the same semantic workload executed?
+- Did every design point satisfy the same correctness policy?
+- Which source/configuration/binary/netlist identities produced the result?
+- Are metrics static, SimX, RTL, FPGA, synthesis, or silicon evidence?
+- Does a matched software+hardware design beat controlled software-only and hardware-only alternatives?
+- What bottleneck was removed, and what new bottleneck appeared?
+- Can another researcher rebuild the design point and inspect its artifacts?
 
-- Which memory hierarchy choices matter for attention and KV cache?
-- Which copy/runtime features are needed for decode-sized serving paths?
-- Which reduction, barrier, vector, or packed-dot features would reduce real kernel cost?
-- How do changes show up in instructions, cycles, transfer bytes, per-output metrics, and end-to-end efficiency objectives?
+## Non-goals
 
-### Algorithm and model design
+Mandrel is not currently:
 
-Mandrel should also feed measurements back into algorithm design:
+- a production vLLM/SGLang replacement;
+- a full model compiler or serving scheduler;
+- an automatic search/feedback system;
+- a CUDA/Triton compatibility layer;
+- an LLVM-to-Verilog compiler;
+- a monolithic attention accelerator project;
+- a source of FPGA, PPA, energy, or silicon claims before those evidence paths exist;
+- a claim of being the first or uniquely complete system in the field.
 
-- Which attention or KV-cache variants are efficient on open hardware, not only accurate on paper?
-- Which compression, sparsity, paging, or layout assumptions create hardware-friendly access patterns?
-- Which model-side changes reduce bytes/token, launches/token, synchronization, or page-table overhead without unacceptable quality loss?
-- Which algorithmic choices should be avoided because they require hardware/runtime features that open targets do not provide yet?
-
-### SGLang
-
-SGLang is a useful north star for serving-shaped workloads: prefill/decode separation, paged KV, batching, and runtime scheduling. Mandrel should first model and replay SGLang-class attention/KV shapes before attempting a production backend.
-
-### llama.cpp / ggml
-
-llama.cpp/ggml is a practical integration direction for portable local inference. Mandrel should eventually provide conservative C/C++ boundaries and one-op backend probes, but only after the internal ABI/layout and trace story is stable.
-
-## Non-goals for now
-
-Mandrel should stay narrow while it becomes deep:
-
-- Not a full LLM framework.
-- Not a production SGLang or llama.cpp backend yet.
-- Not a CUDA/Triton replacement.
-- Not a generic compiler for every operator.
-- Not a custom chip RTL project before workload and experiment infrastructure are credible.
-- Not a benchmark-only project without correctness, traceability, and reproducibility.
-
-## Operating principles
-
-1. **Quantitative architecture method.** Treat AI workloads the way computer architecture treats benchmarks: characterize them, measure them, model bottlenecks, compare alternatives, and optimize based on evidence.
-2. **Optimization-objective driven.** Use attention, KV cache, copy, and communication paths from LLM serving to define efficiency objectives and design variables.
-3. **Executable spine first.** Every major abstraction should eventually attach to a runnable correctness/trace path.
-4. **Correctness before performance.** Host-reference comparison remains a promotion gate.
-5. **Quantification before optimization.** Design changes need metrics: cycles, instructions, transfer bytes, workload shape, cache behavior, correctness, and derived ratios.
-6. **Analysis before claims.** A design is better only if the experiment explains which bottleneck moved and why.
-7. **Hardware and algorithm co-evolution.** Measurements should guide both open-hardware features and algorithm/model choices.
-8. **Metadata becomes gates.** Layout, ABI, runtime shape, and KV policies should be validated by compiler/runtime code, not only documented.
-9. **Narrow public API, rich internal model.** Keep external integration conservative while internal design-space metadata evolves.
-10. **One hard vertical slice beats many shallow demos.** The attention path is the first spine; broader layers should grow around it.
-
-## Near-term path
-
-1. Finish the attention ABI/layout metadata gates.
-2. Add paged KV legality and page-layout modeling without prematurely lowering it.
-3. Make tiled online attention lowering consume `key_tile` structurally.
-4. Promote data movement, copy, and runtime event metadata into first-class experiment records.
-5. Introduce target/hardware specs derived from Vortex configuration.
-6. Turn trace JSONL into higher-level experiment reports.
-
-The project succeeds when it can quantify how a cross-layer design change affects a real LLM-serving path on open hardware, explain the bottleneck movement, and guide the next efficiency-improving design decision.
+The ambition is not to own every layer. It is to make the critical interfaces between workload, compiler, RISC-V GPU RTL, chip configuration, and evidence precise enough to support serious codesign.

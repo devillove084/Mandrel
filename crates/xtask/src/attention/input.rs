@@ -72,7 +72,7 @@ pub(crate) fn attention_runtime_flag(key: &str) -> Result<bool> {
     }
 }
 
-fn attention_runtime_extent_from_env(
+pub(crate) fn attention_runtime_extent_from_env(
     key: &str,
     default_value: usize,
     max_value: usize,

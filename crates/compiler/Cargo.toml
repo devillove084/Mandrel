@@ -14,6 +14,7 @@ std = [
     "mandrel-model-ir/std",
     "mandrel-profiler/std",
     "mandrel-schedule/std",
+    "mandrel-target-ir/std",
     "snafu/std",
 ]
 
@@ -23,6 +24,7 @@ mandrel-kernel-ir = { workspace = true }
 mandrel-model-ir = { workspace = true }
 mandrel-profiler = { workspace = true }
 mandrel-schedule = { workspace = true }
+mandrel-target-ir = { workspace = true }
 snafu = { workspace = true }
 
 [lib]

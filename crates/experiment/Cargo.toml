@@ -9,13 +9,19 @@ rust-version.workspace = true
 [features]
 default = ["std"]
 std = [
+    "mandrel-artifact/std",
     "mandrel-device/std",
+    "mandrel-hardware/std",
     "mandrel-profiler/std",
+    "mandrel-target-ir/std",
 ]
 
 [dependencies]
+mandrel-artifact = { workspace = true }
 mandrel-device = { workspace = true }
+mandrel-hardware = { workspace = true }
 mandrel-profiler = { workspace = true }
+mandrel-target-ir = { workspace = true }
 
 [lib]
 name = "mandrel_experiment"

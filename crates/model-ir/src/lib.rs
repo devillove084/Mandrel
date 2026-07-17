@@ -5,15 +5,6 @@ use mandrel_core::{ElementType, Layout, Shape, TensorDesc};
 pub type TensorId = u32;
 pub type NodeId = u32;
 
-/// High-level target selection for analysis and lowering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TargetKind {
-    Reference,
-    VortexSimx,
-    VortexRtl,
-    VortexFpga,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Quantization {
     pub scale_numerator: i32,
@@ -213,31 +204,9 @@ pub struct Node {
     pub kind: OpKind,
 }
 
-/// Target-side constraints that guide schedule search and lowering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TargetConstraints {
-    pub target: TargetKind,
-    pub max_workgroup_threads: usize,
-    pub local_memory_bytes: usize,
-    pub preferred_subgroup_width: usize,
-    pub supports_int8: bool,
-}
-
-impl TargetConstraints {
-    pub const fn vortex_simx_default() -> Self {
-        Self {
-            target: TargetKind::VortexSimx,
-            max_workgroup_threads: 16,
-            local_memory_bytes: 32 * 1024,
-            preferred_subgroup_width: 4,
-            supports_int8: true,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{AttentionOp, SoftmaxAxis, SoftmaxOp, TargetConstraints, TargetKind};
+    use super::{AttentionOp, SoftmaxAxis, SoftmaxOp};
 
     #[test]
     fn builds_attention_prefill_demo_op() {
@@ -260,14 +229,5 @@ mod tests {
         assert_eq!(op.tensors.out, 1);
         assert_eq!(op.shape.elements(), 8);
         assert_eq!(op.axis, SoftmaxAxis::Rows);
-    }
-
-    #[test]
-    fn vortex_constraints_target_simx() {
-        let constraints = TargetConstraints::vortex_simx_default();
-
-        assert_eq!(constraints.target, TargetKind::VortexSimx);
-        assert_eq!(constraints.max_workgroup_threads, 16);
-        assert_eq!(constraints.preferred_subgroup_width, 4);
     }
 }

@@ -1,22 +1,29 @@
 use std::path::Path;
 
+use mandrel_artifact::VortexMlirKernelArtifacts;
+use mandrel_experiment::ExperimentSpec;
 use mandrel_vortex_backend::{
-    VortexConfig, VortexMlirKernelArtifacts, VortexMlirKernelBuildRequest, VortexToolchainMode,
-    build_vortex_mlir_kernel_artifacts, generate_vortex_attention_prefill_mlir,
+    VortexConfig, VortexMlirKernelBuildRequest, VortexToolchainMode,
+    build_vortex_mlir_kernel_artifacts,
 };
+use mandrel_vortex_codegen::generate_vortex_attention_prefill_mlir;
 
 use crate::Result;
 use crate::command::XtaskCommandRunner;
 use crate::vortex::reject_obvious_incompatible_prebuilt_tools;
 
-use super::plan::{current_attention_prefill_plan, print_attention_plan};
+use super::plan::{
+    current_attention_experiment_spec, current_attention_prefill_plan, print_attention_plan,
+};
 
 pub(crate) fn generate_vortex_attention_kernel_source(workspace_root: &Path) -> Result<()> {
-    generate_vortex_attention_artifacts(workspace_root, true).map(|_| ())
+    let spec = current_attention_experiment_spec()?;
+    generate_vortex_attention_artifacts(workspace_root, spec, true).map(|_| ())
 }
 
 pub(super) fn generate_vortex_attention_artifacts(
     workspace_root: &Path,
+    spec: ExperimentSpec,
     print_source: bool,
 ) -> Result<VortexMlirKernelArtifacts> {
     let config = VortexConfig::from_env(workspace_root)?;
@@ -24,7 +31,7 @@ pub(super) fn generate_vortex_attention_artifacts(
         reject_obvious_incompatible_prebuilt_tools(&config)?;
     }
 
-    let plan = current_attention_prefill_plan()?;
+    let plan = current_attention_prefill_plan(spec)?;
     print_attention_plan("Vortex attention-prefill MLIR dispatch", &plan);
     match generate_vortex_attention_prefill_mlir(&plan) {
         Ok(generated) => {
@@ -102,7 +109,8 @@ fn validate_attention_mlir_with_vortex_llvm(
 mod tests {
     use std::path::Path;
 
-    use mandrel_vortex_backend::{VortexMlirKernelArtifacts, vortex_kernel_entry_symbol};
+    use mandrel_artifact::VortexMlirKernelArtifacts;
+    use mandrel_vortex_backend::vortex_kernel_entry_symbol;
 
     #[test]
     fn attention_artifact_paths_follow_kernel_symbol() {

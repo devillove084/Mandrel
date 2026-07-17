@@ -2,9 +2,8 @@ use std::io;
 use std::process::ExitStatus;
 
 use mandrel_compiler::CompileError;
-use mandrel_vortex_backend::{
-    AttentionPlanValidationError, VortexBackendError, VortexCodegenError, VortexToolchainError,
-};
+use mandrel_vortex_backend::{VortexBackendError, VortexToolchainError};
+use mandrel_vortex_codegen::{AttentionPlanValidationError, VortexCodegenError};
 use snafu::Snafu;
 
 pub(crate) type Result<T> = std::result::Result<T, XtaskError>;

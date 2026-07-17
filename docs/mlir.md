@@ -1,6 +1,6 @@
-# MLIR and Vortex LLVM toolchain plan
+# Current MLIR and Vortex LLVM toolchain
 
-Mandrel's maintained generated device-code path is MLIR-first and currently feeds a complete Vortex RISC-V runtime correctness flow.
+Mandrel's current generated device-code path is a textual LLVM-dialect MLIR bridge feeding the executable Vortex RISC-V correctness flow. Source generation and plan validation live in `mandrel-vortex-codegen`; runtime execution remains in `mandrel-vortex-backend`.
 
 ## Current path
 
@@ -34,13 +34,13 @@ Default local path:
 external/vortex-source-tools/llvm-vortex/bin
 ```
 
-## Why textual MLIR first
+## Why a textual LLVM-dialect bridge first
 
 Textual MLIR is a pragmatic bridge while the Vortex fork is on LLVM/MLIR 20 and Rust MLIR bindings are version-sensitive. It gives us:
 
 - reproducible source artifacts;
 - easy debugging in `mlir-opt`/`mlir-translate`;
-- a clean migration path to a custom `mandrel-opt` tool later;
+- a clean migration path to structured Mandrel/target dialects and a custom `mandrel-opt` tool later;
 - no dependency on Rust bindings that target a newer LLVM release.
 
 ## Current lowering shape
@@ -102,6 +102,8 @@ target/mandrel/vortex/attention_prefill_i8.startup_probe.elf
 target/mandrel/vortex/attention_prefill_i8.vx_start.o
 target/mandrel/vortex/attention_prefill_i8.elf
 target/mandrel/vortex/attention_prefill_i8.vxbin
+target/mandrel/vortex/attention_prefill_i8.experiment.json
+target/mandrel/vortex/attention_prefill_i8.experiment.csv
 ```
 
 The object step intentionally goes through the Vortex `clang` driver instead of invoking `llc` directly. The generated LLVM IR contains Vortex uniform marker intrinsics, and the Vortex driver pass pipeline must remove those markers before RISC-V instruction selection.
@@ -131,4 +133,4 @@ Keep Mandrel lowering policy out of the LLVM fork. The fork should remain respon
 - kernel entry metadata;
 - object and artifact compatibility.
 
-Mandrel should own operator semantics, schedule choices, attention layouts, MLIR generation, artifact orchestration, and runtime correctness checks.
+Mandrel should own operator semantics, schedule choices, attention layouts, MLIR generation, artifact orchestration, hardware-design identity, and runtime correctness checks. LLVM does not generate Verilog; the Vortex configuration/RTL branch is materialized separately and joined to the binary through the experiment contract.

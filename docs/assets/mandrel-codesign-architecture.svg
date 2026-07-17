@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Mandrel serving-driven RISC-V inference codesign architecture</title>
+  <desc id="desc">A human-authored experiment contract drives parallel software and hardware branches. The software branch lowers serving workloads through schedules, kernel IR, MLIR, LLVM, and RISC-V binaries. The hardware branch resolves Vortex parameters into Verilog, simulation, FPGA, and synthesis realizations. Both branches meet at correctness and evidence collection, producing command-line, JSON, and CSV reports for researcher analysis.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="0.5" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#130b25"/>
+    </linearGradient>
+    <radialGradient id="haloCyan" cx="0.22" cy="0.34" r="0.62">
+      <stop offset="0" stop-color="#16d9e3" stop-opacity="0.19"/>
+      <stop offset="1" stop-color="#16d9e3" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="haloViolet" cx="0.82" cy="0.35" r="0.58">
+      <stop offset="0" stop-color="#a855f7" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#a855f7" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="contract" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1d4ed8"/>
+      <stop offset="0.48" stop-color="#6d28d9"/>
+      <stop offset="1" stop-color="#be185d"/>
+    </linearGradient>
+    <linearGradient id="software" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0e7490" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#115e59" stop-opacity="0.92"/>
+    </linearGradient>
+    <linearGradient id="hardware" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7e22ce" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#9f1239" stop-opacity="0.92"/>
+    </linearGradient>
+    <linearGradient id="evidence" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0891b2"/>
+      <stop offset="0.5" stop-color="#4f46e5"/>
+      <stop offset="1" stop-color="#c026d3"/>
+    </linearGradient>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M 44 0 L 0 0 0 44" fill="none" stroke="#93c5fd" stroke-opacity="0.045" stroke-width="1"/>
+    </pattern>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <marker id="arrowCyan" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#22d3ee"/>
+    </marker>
+    <marker id="arrowViolet" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#c084fc"/>
+    </marker>
+    <marker id="arrowWhite" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#e2e8f0"/>
+    </marker>
+    <style>
+      .sans { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+      .title { font-size: 52px; font-weight: 800; letter-spacing: -1.4px; fill: #f8fafc; }
+      .subtitle { font-size: 20px; font-weight: 500; fill: #a5b4fc; letter-spacing: 0.4px; }
+      .eyebrow { font-size: 14px; font-weight: 800; fill: #67e8f9; letter-spacing: 3px; }
+      .panelTitle { font-size: 24px; font-weight: 800; fill: #f8fafc; }
+      .panelSub { font-size: 14px; font-weight: 600; fill: #cbd5e1; letter-spacing: 0.5px; }
+      .nodeTitle { font-size: 17px; font-weight: 760; fill: #f8fafc; }
+      .nodeText { font-size: 13px; font-weight: 520; fill: #cbd5e1; }
+      .tiny { font-size: 12px; font-weight: 600; fill: #94a3b8; }
+      .chip { font-size: 12px; font-weight: 760; fill: #e2e8f0; letter-spacing: 0.7px; }
+      .metric { font-size: 15px; font-weight: 760; fill: #f8fafc; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1000" rx="30" fill="url(#bg)"/>
+  <rect width="1600" height="1000" rx="30" fill="url(#haloCyan)"/>
+  <rect width="1600" height="1000" rx="30" fill="url(#haloViolet)"/>
+  <rect x="1" y="1" width="1598" height="998" rx="29" fill="url(#grid)" stroke="#334155" stroke-opacity="0.7"/>
+
+  <g class="sans">
+    <text x="72" y="74" class="eyebrow">SERVING-DRIVEN · OPEN RISC-V · MEASURABLE CODESIGN</text>
+    <text x="72" y="132" class="title">Mandrel Codesign Lab</text>
+    <text x="72" y="166" class="subtitle">One human-authored experiment. Two artifact-producing branches. One evidence contract.</text>
+
+    <g filter="url(#shadow)">
+      <rect x="400" y="204" width="800" height="118" rx="28" fill="url(#contract)" stroke="#e9d5ff" stroke-opacity="0.48" stroke-width="1.5"/>
+      <circle cx="448" cy="263" r="22" fill="#ffffff" fill-opacity="0.13" stroke="#ffffff" stroke-opacity="0.45"/>
+      <path d="M438 264 l7 7 14 -17" fill="none" stroke="#f8fafc" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="488" y="246" class="panelTitle">Human-authored Experiment Contract</text>
+      <text x="488" y="276" class="panelSub">workload · software · hardware · correctness · evidence</text>
+      <rect x="962" y="236" width="188" height="44" rx="22" fill="#020617" fill-opacity="0.38" stroke="#f5d0fe" stroke-opacity="0.5"/>
+      <text x="1056" y="263" text-anchor="middle" class="chip">NO AUTO FEEDBACK</text>
+    </g>
+
+    <path d="M710 322 C690 350 565 350 465 384" fill="none" stroke="#22d3ee" stroke-width="3" stroke-opacity="0.9" marker-end="url(#arrowCyan)"/>
+    <path d="M890 322 C910 350 1035 350 1135 384" fill="none" stroke="#c084fc" stroke-width="3" stroke-opacity="0.9" marker-end="url(#arrowViolet)"/>
+
+    <g filter="url(#shadow)">
+      <rect x="70" y="380" width="700" height="378" rx="30" fill="#071827" fill-opacity="0.86" stroke="#22d3ee" stroke-opacity="0.52" stroke-width="1.5"/>
+      <rect x="70" y="380" width="700" height="74" rx="30" fill="url(#software)"/>
+      <path d="M70 424 L70 454 L770 454 L770 424" fill="url(#software)"/>
+      <text x="108" y="416" class="panelTitle">Software Forge</text>
+      <text x="108" y="441" class="panelSub">semantics → schedule → compiler → executable RISC-V</text>
+
+      <g>
+        <rect x="108" y="486" width="196" height="92" rx="18" fill="#0c4a6e" fill-opacity="0.72" stroke="#38bdf8" stroke-opacity="0.7"/>
+        <text x="128" y="517" class="nodeTitle">Serving Workload</text>
+        <text x="128" y="544" class="nodeText">prefill · decode · KV</text>
+        <text x="128" y="564" class="tiny">causal · GQA · paging</text>
+
+        <path d="M304 532 H348" fill="none" stroke="#67e8f9" stroke-width="2.5" marker-end="url(#arrowCyan)"/>
+
+        <rect x="354" y="486" width="196" height="92" rx="18" fill="#155e75" fill-opacity="0.7" stroke="#2dd4bf" stroke-opacity="0.72"/>
+        <text x="374" y="517" class="nodeTitle">Schedule + Kernel IR</text>
+        <text x="374" y="544" class="nodeText">tiles · movement · reduce</text>
+        <text x="374" y="564" class="tiny">target requirement gates</text>
+
+        <path d="M550 532 H594" fill="none" stroke="#67e8f9" stroke-width="2.5" marker-end="url(#arrowCyan)"/>
+
+        <rect x="600" y="486" width="132" height="92" rx="18" fill="#134e4a" fill-opacity="0.78" stroke="#5eead4" stroke-opacity="0.72"/>
+        <text x="620" y="517" class="nodeTitle">MLIR</text>
+        <text x="620" y="544" class="nodeText">structured</text>
+        <text x="620" y="564" class="tiny">target ops</text>
+      </g>
+
+      <path d="M666 578 V612" fill="none" stroke="#67e8f9" stroke-width="2.5" marker-end="url(#arrowCyan)"/>
+
+      <g>
+        <rect x="108" y="624" width="624" height="94" rx="20" fill="#082f49" fill-opacity="0.68" stroke="#22d3ee" stroke-opacity="0.55"/>
+        <text x="132" y="658" class="nodeTitle">LLVM / Vortex Target</text>
+        <text x="132" y="685" class="nodeText">intrinsics · ISel · registers · scheduling · MC · ABI</text>
+        <rect x="544" y="646" width="162" height="42" rx="14" fill="#06b6d4" fill-opacity="0.15" stroke="#67e8f9" stroke-opacity="0.55"/>
+        <text x="625" y="672" text-anchor="middle" class="chip mono">.o · ELF · .vxbin</text>
+      </g>
+    </g>
+
+    <g filter="url(#shadow)">
+      <rect x="830" y="380" width="700" height="378" rx="30" fill="#170d25" fill-opacity="0.86" stroke="#c084fc" stroke-opacity="0.52" stroke-width="1.5"/>
+      <rect x="830" y="380" width="700" height="74" rx="30" fill="url(#hardware)"/>
+      <path d="M830 424 L830 454 L1530 454 L1530 424" fill="url(#hardware)"/>
+      <text x="868" y="416" class="panelTitle">Hardware Forge</text>
+      <text x="868" y="441" class="panelSub">design variables → Verilog realization → chip evidence</text>
+
+      <g>
+        <rect x="868" y="486" width="196" height="92" rx="18" fill="#581c87" fill-opacity="0.68" stroke="#d8b4fe" stroke-opacity="0.66"/>
+        <text x="888" y="517" class="nodeTitle">Hardware Design</text>
+        <text x="888" y="544" class="nodeText">cores · warps · memory</text>
+        <text x="888" y="564" class="tiny">TCU · DXA · new RTL</text>
+
+        <path d="M1064 532 H1108" fill="none" stroke="#d8b4fe" stroke-width="2.5" marker-end="url(#arrowViolet)"/>
+
+        <rect x="1114" y="486" width="196" height="92" rx="18" fill="#701a75" fill-opacity="0.66" stroke="#f0abfc" stroke-opacity="0.68"/>
+        <text x="1134" y="517" class="nodeTitle">Resolved Vortex</text>
+        <text x="1134" y="544" class="nodeText">config digest · source SHA</text>
+        <text x="1134" y="564" class="tiny">VX_config.vh / .h</text>
+
+        <path d="M1310 532 H1354" fill="none" stroke="#f0abfc" stroke-width="2.5" marker-end="url(#arrowViolet)"/>
+
+        <rect x="1360" y="486" width="132" height="92" rx="18" fill="#881337" fill-opacity="0.72" stroke="#fda4af" stroke-opacity="0.7"/>
+        <text x="1380" y="517" class="nodeTitle">Verilog</text>
+        <text x="1380" y="544" class="nodeText">parameterized</text>
+        <text x="1380" y="564" class="tiny">reviewed patches</text>
+      </g>
+
+      <path d="M1426 578 V612" fill="none" stroke="#e879f9" stroke-width="2.5" marker-end="url(#arrowViolet)"/>
+
+      <g>
+        <rect x="868" y="624" width="624" height="94" rx="20" fill="#3b0a45" fill-opacity="0.63" stroke="#e879f9" stroke-opacity="0.54"/>
+        <text x="892" y="657" class="nodeTitle">Hardware Realizations</text>
+        <text x="892" y="685" class="nodeText">matching config + build identity</text>
+        <rect x="1176" y="646" width="70" height="42" rx="13" fill="#a855f7" fill-opacity="0.18" stroke="#d8b4fe" stroke-opacity="0.55"/>
+        <text x="1211" y="672" text-anchor="middle" class="chip">SimX</text>
+        <rect x="1254" y="646" width="70" height="42" rx="13" fill="#a855f7" fill-opacity="0.18" stroke="#d8b4fe" stroke-opacity="0.55"/>
+        <text x="1289" y="672" text-anchor="middle" class="chip">RTL</text>
+        <rect x="1332" y="646" width="70" height="42" rx="13" fill="#be185d" fill-opacity="0.2" stroke="#fda4af" stroke-opacity="0.55"/>
+        <text x="1367" y="672" text-anchor="middle" class="chip">FPGA</text>
+        <rect x="1410" y="646" width="58" height="42" rx="13" fill="#be185d" fill-opacity="0.2" stroke="#fda4af" stroke-opacity="0.55"/>
+        <text x="1439" y="672" text-anchor="middle" class="chip">PPA</text>
+      </g>
+    </g>
+
+    <path d="M420 758 C470 790 610 798 686 812" fill="none" stroke="#22d3ee" stroke-width="3" stroke-opacity="0.88" marker-end="url(#arrowCyan)"/>
+    <path d="M1180 758 C1130 790 990 798 914 812" fill="none" stroke="#c084fc" stroke-width="3" stroke-opacity="0.88" marker-end="url(#arrowViolet)"/>
+
+    <g filter="url(#glow)">
+      <rect x="490" y="806" width="620" height="92" rx="28" fill="url(#evidence)" stroke="#e0e7ff" stroke-opacity="0.62"/>
+      <text x="800" y="842" text-anchor="middle" class="panelTitle">Execution + Correctness + Evidence</text>
+      <text x="800" y="871" text-anchor="middle" class="panelSub">matched binary + hardware · exact oracle · counters · events · artifacts</text>
+    </g>
+
+    <path d="M800 898 V925" fill="none" stroke="#e2e8f0" stroke-width="2.5" marker-end="url(#arrowWhite)"/>
+
+    <g filter="url(#shadow)">
+      <rect x="310" y="928" width="980" height="54" rx="20" fill="#0f172a" stroke="#64748b" stroke-opacity="0.72"/>
+      <text x="350" y="961" class="metric mono">CLI</text>
+      <text x="402" y="961" class="nodeText">perf-style</text>
+      <circle cx="532" cy="954" r="3" fill="#64748b"/>
+      <text x="570" y="961" class="metric mono">JSON</text>
+      <text x="632" y="961" class="nodeText">complete result</text>
+      <circle cx="790" cy="954" r="3" fill="#64748b"/>
+      <text x="828" y="961" class="metric mono">CSV</text>
+      <text x="878" y="961" class="nodeText">study row</text>
+      <circle cx="998" cy="954" r="3" fill="#64748b"/>
+      <text x="1036" y="961" class="metric">Researcher</text>
+      <text x="1128" y="961" class="nodeText">chooses the next experiment</text>
+    </g>
+  </g>
+</svg>

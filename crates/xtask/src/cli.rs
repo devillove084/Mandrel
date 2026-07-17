@@ -107,9 +107,6 @@ pub(crate) enum XtaskCommand {
     #[command(about = "Run generated attention vxbin through Vortex simx and compare output")]
     VortexRunAttention,
 
-    #[command(about = "Summarize attention runtime trace JSONL history")]
-    VortexTraceAttention,
-
     #[command(about = "Run Vortex official vecadd through ci/blackbox.sh when available")]
     VortexRunVecadd,
 
@@ -135,7 +132,6 @@ impl XtaskCommand {
             Self::MoeRunLayerReference { .. } => "moe-run-layer-reference",
             Self::VortexGenerateAttention => "vortex-generate-attention",
             Self::VortexRunAttention => "vortex-run-attention",
-            Self::VortexTraceAttention => "vortex-trace-attention",
             Self::VortexRunVecadd => "vortex-run-vecadd",
             Self::VortexRunAttentionInner { .. } => "__vortex-run-attention-inner",
         }

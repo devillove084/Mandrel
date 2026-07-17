@@ -2,6 +2,8 @@ use mandrel_core::ElementType;
 
 use crate::symbol::KernelSymbol;
 
+pub const ATTENTION_PREFILL_I8_ARG_COUNT: usize = 8;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelDomain {
     Elementwise,
@@ -105,7 +107,7 @@ pub const VORTEX_KERNEL_CATALOG: [KernelSpec; 3] = [
         KernelSymbol::AttentionPrefillI8,
         KernelDomain::Attention,
         KernelImplementation::GeneratedVortexMlir,
-        KernelAvailability::Planned,
+        KernelAvailability::Available,
         KernelSignature::AttentionPrefill {
             element_type: ElementType::I8,
         },
@@ -149,7 +151,7 @@ mod tests {
     };
 
     #[test]
-    fn catalog_marks_attention_and_softmax_as_planned_mlir_kernels() {
+    fn catalog_distinguishes_executable_attention_from_planned_softmax() {
         let attention = match kernel_spec(KernelSymbol::AttentionPrefillI8) {
             Some(spec) => spec,
             None => panic!("expected planned attention prefill spec"),
@@ -169,8 +171,9 @@ mod tests {
             softmax.implementation,
             KernelImplementation::GeneratedVortexMlir
         );
-        assert_eq!(attention.availability, KernelAvailability::Planned);
-        assert!(available_kernel(KernelSymbol::AttentionPrefillI8).is_none());
+        assert_eq!(attention.availability, KernelAvailability::Available);
+        assert!(available_kernel(KernelSymbol::AttentionPrefillI8).is_some());
+        assert_eq!(softmax.availability, KernelAvailability::Planned);
     }
 
     #[test]

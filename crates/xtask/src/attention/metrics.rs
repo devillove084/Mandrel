@@ -1,5 +1,8 @@
 use mandrel_compiler::VortexAttentionPrefillPlan;
-use mandrel_vortex_backend::{AttentionPrefillI8Run, VortexLaunchTrace};
+use mandrel_model_ir::AttentionShape;
+use mandrel_profiler::{AttentionPrefillEstimateInput, estimate_gpu_attention_prefill};
+use mandrel_target_ir::{TargetContract, TargetSpec};
+use mandrel_vortex_backend::{AttentionPrefillI8Run, VortexDeviceCaps, VortexLaunchTrace};
 
 use crate::Result;
 
@@ -13,6 +16,15 @@ pub(crate) struct AttentionRuntimeWorkload {
     pub(crate) query_tile: u32,
     pub(crate) key_tile: u32,
     pub(crate) logical_macs: u64,
+    pub(crate) lowered_macs: u64,
+    pub(crate) estimated_global_bytes_read: u64,
+    pub(crate) estimated_global_bytes_written: u64,
+    pub(crate) estimated_local_memory_bytes_per_workgroup: u64,
+    pub(crate) target_contract: TargetContract,
+    pub(crate) target_threads_per_warp: u64,
+    pub(crate) target_warps_per_core: u64,
+    pub(crate) target_max_workgroup_threads: u64,
+    pub(crate) target_local_memory_bytes: u64,
     pub(crate) workgroup_count: u64,
     pub(crate) threads_per_workgroup: u64,
     pub(crate) total_threads: u64,
@@ -31,6 +43,8 @@ impl AttentionRuntimeWorkload {
         plan: &VortexAttentionPrefillPlan,
         input: &AttentionPrefillI8Run,
         trace: VortexLaunchTrace,
+        target_caps: VortexDeviceCaps,
+        target_contract: TargetContract,
         output_elements: usize,
     ) -> Result<Self> {
         let runtime_shape = plan.metadata.runtime_shape;
@@ -61,6 +75,16 @@ impl AttentionRuntimeWorkload {
             threads_per_workgroup,
             "attention total thread count",
         )?;
+        let target_max_workgroup_threads = target_caps
+            .max_workgroup_threads()
+            .ok_or_else(|| "Vortex target max workgroup thread count overflow".to_owned())?;
+        let lowering_metrics = estimate_gpu_attention_prefill(AttentionPrefillEstimateInput::new(
+            AttentionShape::new(input.sequence as usize, input.head_dim as usize),
+            plan.schedule,
+            plan.op.element_type,
+            plan.op.element_type,
+        ))
+        .ok_or_else(|| "attention runtime lowering estimate overflow".to_owned())?;
 
         Ok(Self {
             compiled_sequence,
@@ -71,6 +95,24 @@ impl AttentionRuntimeWorkload {
             query_tile: input.query_tile,
             key_tile: input.key_tile,
             logical_macs: attention_prefill_logical_macs(input.sequence, input.head_dim)?,
+            lowered_macs: usize_to_u64(lowering_metrics.lowered_macs, "lowered MAC count")?,
+            estimated_global_bytes_read: usize_to_u64(
+                lowering_metrics.global_bytes_read,
+                "estimated global bytes read",
+            )?,
+            estimated_global_bytes_written: usize_to_u64(
+                lowering_metrics.global_bytes_written,
+                "estimated global bytes written",
+            )?,
+            estimated_local_memory_bytes_per_workgroup: usize_to_u64(
+                lowering_metrics.local_memory_bytes_per_workgroup,
+                "estimated local memory bytes per workgroup",
+            )?,
+            target_contract,
+            target_threads_per_warp: target_caps.threads_per_warp,
+            target_warps_per_core: target_caps.warps_per_core,
+            target_max_workgroup_threads,
+            target_local_memory_bytes: target_caps.local_memory_bytes,
             workgroup_count,
             threads_per_workgroup,
             total_threads,
@@ -103,7 +145,7 @@ pub(crate) fn format_mandrel_runtime_trace_line(
     workload: AttentionRuntimeWorkload,
 ) -> String {
     format!(
-        "MANDREL_RUNTIME_TRACE: kernel={} runtime_sequence={} runtime_head_dim={} query_tile={} key_tile={} compiled_sequence={} compiled_head_dim={} head_dim_tile={} logical_macs={} workgroup_count={} threads_per_workgroup={} total_threads={} runtime_q_elements={} runtime_kv_elements={} runtime_output_elements={} runtime_q_bytes={} runtime_kv_bytes={} runtime_output_bytes={} module_cache_hit={} kernel_cache_hit={} grid={}x{}x{} block={}x{}x{} shared_memory_bytes={} host_to_device_bytes={} device_to_host_bytes={}",
+        "MANDREL_RUNTIME_TRACE: kernel={} runtime_sequence={} runtime_head_dim={} query_tile={} key_tile={} compiled_sequence={} compiled_head_dim={} head_dim_tile={} logical_macs={} lowered_macs={} estimated_global_bytes_read={} estimated_global_bytes_written={} estimated_local_memory_bytes_per_workgroup={} requested_target_backend={} requested_target_xlen={} requested_target_max_workgroup_threads={} requested_target_preferred_subgroup_width={} requested_target_local_memory_bytes={} requested_target_supports_int8={} requested_target_supports_float32={} requested_target_supports_tensor_cores={} requested_target_supports_async_copy={} observed_target_backend={} observed_target_xlen={} observed_target_preferred_subgroup_width={} observed_target_supports_int8={} observed_target_supports_float32={} observed_target_supports_tensor_cores={} observed_target_supports_async_copy={} target_compatible={} target_mismatch_mask={} target_threads_per_warp={} target_warps_per_core={} target_max_workgroup_threads={} target_local_memory_bytes={} workgroup_count={} threads_per_workgroup={} total_threads={} runtime_q_elements={} runtime_kv_elements={} runtime_output_elements={} runtime_q_bytes={} runtime_kv_bytes={} runtime_output_bytes={} module_cache_hit={} kernel_cache_hit={} grid={}x{}x{} block={}x{}x{} shared_memory_bytes={} host_to_device_bytes={} device_to_host_bytes={}",
         trace.kernel_symbol,
         workload.runtime_sequence,
         workload.runtime_head_dim,
@@ -113,6 +155,32 @@ pub(crate) fn format_mandrel_runtime_trace_line(
         workload.compiled_head_dim,
         workload.head_dim_tile,
         workload.logical_macs,
+        workload.lowered_macs,
+        workload.estimated_global_bytes_read,
+        workload.estimated_global_bytes_written,
+        workload.estimated_local_memory_bytes_per_workgroup,
+        target_backend_as_str(workload.target_contract.requested),
+        workload.target_contract.requested.xlen,
+        workload.target_contract.requested.max_workgroup_threads,
+        workload.target_contract.requested.preferred_subgroup_width,
+        workload.target_contract.requested.local_memory_bytes,
+        workload.target_contract.requested.supports_int8,
+        workload.target_contract.requested.supports_float32,
+        workload.target_contract.requested.supports_tensor_cores,
+        workload.target_contract.requested.supports_async_copy,
+        target_backend_as_str(workload.target_contract.observed),
+        workload.target_contract.observed.xlen,
+        workload.target_contract.observed.preferred_subgroup_width,
+        workload.target_contract.observed.supports_int8,
+        workload.target_contract.observed.supports_float32,
+        workload.target_contract.observed.supports_tensor_cores,
+        workload.target_contract.observed.supports_async_copy,
+        workload.target_contract.is_compatible(),
+        workload.target_contract.compatibility.mismatch_mask(),
+        workload.target_threads_per_warp,
+        workload.target_warps_per_core,
+        workload.target_max_workgroup_threads,
+        workload.target_local_memory_bytes,
         workload.workgroup_count,
         workload.threads_per_workgroup,
         workload.total_threads,
@@ -134,6 +202,10 @@ pub(crate) fn format_mandrel_runtime_trace_line(
         trace.host_to_device_bytes,
         trace.device_to_host_bytes
     )
+}
+
+fn target_backend_as_str(target: TargetSpec) -> &'static str {
+    target.backend_name()
 }
 
 fn attention_prefill_logical_macs(sequence: u32, head_dim: u32) -> Result<u64> {

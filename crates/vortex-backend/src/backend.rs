@@ -4,14 +4,13 @@ use std::path::{Path, PathBuf};
 
 use snafu::Snafu;
 
-use mandrel_compiler::VORTEX_ATTENTION_PREFILL_ARG_COUNT;
-use mandrel_kernel_ir::{Dim3, KernelLaunch, KernelSymbol};
+use mandrel_kernel_ir::{ATTENTION_PREFILL_I8_ARG_COUNT, Dim3, KernelLaunch, KernelSymbol};
 
-use crate::artifact::VortexArtifactRegistry;
 use crate::executor::{KernelCacheKey, VortexExecutor, VortexLaunchDims, VortexLaunchTrace};
 use crate::vortex2::{
     Device, Event, Queue, Runtime, VX_MEM_READ, VX_MEM_WRITE, VortexDeviceCaps, VortexError,
 };
+use mandrel_artifact::VortexArtifactRegistry;
 
 pub type Result<T> = std::result::Result<T, VortexBackendError>;
 
@@ -160,9 +159,13 @@ impl VortexBackend {
         self.last_launch_trace
     }
 
+    pub fn device_capabilities(&self) -> Result<VortexDeviceCaps> {
+        self.device.capabilities().map_err(VortexBackendError::from)
+    }
+
     pub fn run_attention_prefill_i8(
         &mut self,
-        launch: &KernelLaunch<VORTEX_ATTENTION_PREFILL_ARG_COUNT>,
+        launch: &KernelLaunch<ATTENTION_PREFILL_I8_ARG_COUNT>,
         input: &AttentionPrefillI8Run,
     ) -> Result<AttentionPrefillI8RunOutput> {
         if launch.symbol != KernelSymbol::AttentionPrefillI8 {
@@ -577,7 +580,7 @@ mod tests {
     #[test]
     fn launch_validation_accepts_current_simx_attention_shape() {
         let caps = simx_caps();
-        let dims = VortexLaunchDims::new([16, 1, 1], [4, 4, 1], 2336);
+        let dims = VortexLaunchDims::new([16, 1, 1], [4, 4, 1], 0);
 
         assert!(validate_launch_dims_against_caps(dims, caps).is_ok());
     }
@@ -604,7 +607,7 @@ mod tests {
         VortexDeviceCaps {
             threads_per_warp: 4,
             warps_per_core: 4,
-            local_memory_bytes: 32 * 1024,
+            local_memory_bytes: 16 * 1024,
         }
     }
 }

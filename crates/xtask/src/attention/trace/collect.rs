@@ -44,6 +44,7 @@ pub(crate) fn collect_attention_runtime_trace_with_enrichment(
             metadata,
             summary,
             correctness,
+            experiment_spec: enrichment.experiment_spec,
         }),
         counters,
         metadata,
@@ -102,6 +103,77 @@ pub(super) fn attention_metadata_from_stdout(stdout: &str) -> AttentionRuntimeTr
         compiled_head_dim: parse_trace_u32_field(line, "compiled_head_dim"),
         head_dim_tile: parse_trace_u32_field(line, "head_dim_tile"),
         logical_macs: parse_trace_u64_field(line, "logical_macs"),
+        lowered_macs: parse_trace_u64_field(line, "lowered_macs"),
+        estimated_global_bytes_read: parse_trace_u64_field(line, "estimated_global_bytes_read"),
+        estimated_global_bytes_written: parse_trace_u64_field(
+            line,
+            "estimated_global_bytes_written",
+        ),
+        estimated_local_memory_bytes_per_workgroup: parse_trace_u64_field(
+            line,
+            "estimated_local_memory_bytes_per_workgroup",
+        ),
+        requested_target_backend: parse_trace_device_backend_field(
+            line,
+            "requested_target_backend",
+        ),
+        requested_target_xlen: parse_trace_u32_field(line, "requested_target_xlen"),
+        requested_target_max_workgroup_threads: parse_trace_u32_field(
+            line,
+            "requested_target_max_workgroup_threads",
+        ),
+        requested_target_preferred_subgroup_width: parse_trace_u32_field(
+            line,
+            "requested_target_preferred_subgroup_width",
+        ),
+        requested_target_local_memory_bytes: parse_trace_u32_field(
+            line,
+            "requested_target_local_memory_bytes",
+        ),
+        requested_target_supports_int8: parse_trace_bool_field(
+            line,
+            "requested_target_supports_int8",
+        ),
+        requested_target_supports_float32: parse_trace_bool_field(
+            line,
+            "requested_target_supports_float32",
+        ),
+        requested_target_supports_tensor_cores: parse_trace_bool_field(
+            line,
+            "requested_target_supports_tensor_cores",
+        ),
+        requested_target_supports_async_copy: parse_trace_bool_field(
+            line,
+            "requested_target_supports_async_copy",
+        ),
+        observed_target_backend: parse_trace_device_backend_field(line, "observed_target_backend"),
+        observed_target_xlen: parse_trace_u32_field(line, "observed_target_xlen"),
+        observed_target_preferred_subgroup_width: parse_trace_u32_field(
+            line,
+            "observed_target_preferred_subgroup_width",
+        ),
+        observed_target_supports_int8: parse_trace_bool_field(
+            line,
+            "observed_target_supports_int8",
+        ),
+        observed_target_supports_float32: parse_trace_bool_field(
+            line,
+            "observed_target_supports_float32",
+        ),
+        observed_target_supports_tensor_cores: parse_trace_bool_field(
+            line,
+            "observed_target_supports_tensor_cores",
+        ),
+        observed_target_supports_async_copy: parse_trace_bool_field(
+            line,
+            "observed_target_supports_async_copy",
+        ),
+        target_compatible: parse_trace_bool_field(line, "target_compatible"),
+        target_mismatch_mask: parse_trace_u16_field(line, "target_mismatch_mask"),
+        target_threads_per_warp: parse_trace_u64_field(line, "target_threads_per_warp"),
+        target_warps_per_core: parse_trace_u64_field(line, "target_warps_per_core"),
+        target_max_workgroup_threads: parse_trace_u64_field(line, "target_max_workgroup_threads"),
+        target_local_memory_bytes: parse_trace_u64_field(line, "target_local_memory_bytes"),
         workgroup_count: parse_trace_u64_field(line, "workgroup_count"),
         threads_per_workgroup: parse_trace_u64_field(line, "threads_per_workgroup"),
         total_threads: parse_trace_u64_field(line, "total_threads"),
@@ -135,6 +207,17 @@ pub(super) fn parse_trace_u32_field(line: &str, field_name: &str) -> Option<u32>
     }
 }
 
+pub(super) fn parse_trace_u16_field(line: &str, field_name: &str) -> Option<u16> {
+    let raw = parse_trace_field(line, field_name)?;
+    match raw.parse::<u16>() {
+        Ok(value) => Some(value),
+        Err(error) => {
+            warn!(field_name, raw, %error, "failed to parse attention runtime trace u16 field");
+            None
+        }
+    }
+}
+
 pub(super) fn parse_trace_usize_field(line: &str, field_name: &str) -> Option<usize> {
     let raw = parse_trace_field(line, field_name)?;
     match raw.parse::<usize>() {
@@ -152,6 +235,26 @@ pub(super) fn parse_trace_u64_field(line: &str, field_name: &str) -> Option<u64>
         Ok(value) => Some(value),
         Err(error) => {
             warn!(field_name, raw, %error, "failed to parse attention runtime trace u64 field");
+            None
+        }
+    }
+}
+
+pub(super) fn parse_trace_device_backend_field(
+    line: &str,
+    field_name: &str,
+) -> Option<DeviceBackend> {
+    let raw = parse_trace_field(line, field_name)?;
+    match raw {
+        "host_reference" => Some(DeviceBackend::HostReference),
+        "vortex_simx" => Some(DeviceBackend::VortexSimx),
+        "vortex_rtl" => Some(DeviceBackend::VortexRtl),
+        "vortex_fpga" => Some(DeviceBackend::VortexFpga),
+        _ => {
+            warn!(
+                field_name,
+                raw, "failed to parse attention runtime trace device backend field"
+            );
             None
         }
     }

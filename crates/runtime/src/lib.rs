@@ -1,8 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 use mandrel_core::{ElementType, Layout, Shape, TensorDesc};
-use mandrel_device::{CommandBuffer, DeviceBackend, DeviceCommand};
+use mandrel_device::{CommandBuffer, DeviceCommand};
 use mandrel_kernel_ir::{Dim3, KernelArg, KernelLaunch, KernelSymbol};
+use mandrel_target_ir::DeviceBackend;
 
 #[cfg(feature = "std")]
 use std::{fmt, fs, path::PathBuf};
@@ -60,7 +61,7 @@ pub const fn example_attention_vortex_plan() -> RuntimePlan<2, 8> {
         KernelSymbol::AttentionPrefillI8,
         Dim3::new(16, 1, 1),
         Dim3::new(4, 4, 1),
-        2336,
+        0,
         [
             KernelArg::buffer(0, 0),
             KernelArg::buffer(1, 1),
@@ -69,7 +70,7 @@ pub const fn example_attention_vortex_plan() -> RuntimePlan<2, 8> {
             KernelArg::u32(4, 64),
             KernelArg::u32(5, 64),
             KernelArg::u32(6, 4),
-            KernelArg::u32(7, 16),
+            KernelArg::u32(7, 1),
         ],
     );
 
@@ -1136,7 +1137,8 @@ mod tests {
         load_tiny_mixtral_layer_fixture_from_hf_dir, load_tiny_mixtral_moe_fixture_from_hf_dir,
         run_tiny_mixtral_layer_reference, run_tiny_moe_reference,
     };
-    use mandrel_device::{DeviceBackend, DeviceCommand};
+    use mandrel_device::DeviceCommand;
+    use mandrel_target_ir::DeviceBackend;
 
     #[test]
     fn example_io_is_attention_prefill_shaped() {

@@ -12,13 +12,10 @@ use cli::{Cli, XtaskCommand};
 pub(crate) use error::{Result, XtaskError};
 
 fn main() {
-    let _log_guard = match logging::init_logging() {
-        Ok(guard) => guard,
-        Err(error) => {
-            eprintln!("failed to initialize logging: {error}");
-            std::process::exit(1);
-        }
-    };
+    if let Err(error) = logging::init_logging() {
+        eprintln!("failed to initialize logging: {error}");
+        std::process::exit(1);
+    }
 
     if let Err(error) = run() {
         tracing::error!(%error, "xtask failed");
@@ -64,9 +61,7 @@ fn run() -> Result<()> {
         XtaskCommand::VortexRunAttention => {
             attention::run_vortex_attention_correctness(&workspace_root)?
         }
-        XtaskCommand::VortexTraceAttention => {
-            attention::print_attention_trace_history(&workspace_root)?
-        }
+
         XtaskCommand::VortexRunAttentionInner { vxbin } => {
             attention::run_vortex_attention_correctness_inner(&workspace_root, vxbin)?
         }

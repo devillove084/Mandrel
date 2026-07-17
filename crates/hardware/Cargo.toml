@@ -1,0 +1,21 @@
+[package]
+name = "mandrel-hardware"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["std"]
+std = ["mandrel-target-ir/std"]
+
+[dependencies]
+mandrel-target-ir = { workspace = true }
+
+[lib]
+name = "mandrel_hardware"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

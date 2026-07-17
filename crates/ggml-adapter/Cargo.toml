@@ -8,11 +8,11 @@ rust-version.workspace = true
 
 [features]
 default = ["std"]
-std = ["mandrel-core/std", "mandrel-device/std", "mandrel-model-ir/std"]
+std = ["mandrel-core/std", "mandrel-model-ir/std", "mandrel-target-ir/std"]
 
 [dependencies]
 mandrel-core = { workspace = true }
-mandrel-device = { workspace = true }
+mandrel-target-ir = { workspace = true }
 mandrel-model-ir = { workspace = true }
 
 [lib]

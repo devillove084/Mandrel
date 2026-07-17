@@ -13,6 +13,7 @@ std = [
     "mandrel-device/std",
     "mandrel-kernel-ir/std",
     "mandrel-kernels/std",
+    "mandrel-target-ir/std",
     "dep:safetensors",
     "dep:serde",
     "dep:serde_json",
@@ -23,6 +24,7 @@ mandrel-core = { workspace = true }
 mandrel-device = { workspace = true }
 mandrel-kernel-ir = { workspace = true }
 mandrel-kernels = { workspace = true }
+mandrel-target-ir = { workspace = true }
 safetensors = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }

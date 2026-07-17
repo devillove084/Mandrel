@@ -1,0 +1,26 @@
+schema = "mandrel.hardware.vortex-config.v1"
+id = "vortex_current_default"
+source_lock = "../source.lock.toml"
+
+[vortex]
+xlen = 64
+clusters = 1
+cores = 1
+warps_per_core = 4
+threads_per_warp = 4
+local_memory_log2_bytes = 14
+dcache_bytes = 16384
+tensor_cores = false
+async_copy = false
+tensor_core_int8 = true
+
+[upstream_keys]
+clusters = "VX_CFG_NUM_CLUSTERS"
+cores = "VX_CFG_NUM_CORES"
+warps_per_core = "VX_CFG_NUM_WARPS"
+threads_per_warp = "VX_CFG_NUM_THREADS"
+local_memory_log2_bytes = "VX_CFG_LMEM_LOG_SIZE"
+dcache_bytes = "VX_CFG_DCACHE_SIZE"
+tensor_cores = "VX_CFG_EXT_TCU_ENABLE"
+async_copy = "VX_CFG_EXT_DXA_ENABLE"
+tensor_core_int8 = "VX_CFG_TCU_INT8_ENABLE"

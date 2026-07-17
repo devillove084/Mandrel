@@ -93,6 +93,12 @@ pub unsafe extern "C" fn mandrel_vortex_backend_create(
         ) {
             return status;
         }
+        if config.flags != 0 {
+            return fail_status(
+                MANDREL_VORTEX_STATUS_INVALID_ARGUMENT,
+                "MandrelVortexBackendConfig.flags is reserved and must be 0",
+            );
+        }
 
         let runtime = if config.runtime_library_path.is_null() {
             match Runtime::load() {
@@ -230,7 +236,11 @@ fn path_from_cstr(value: &CStr) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::MandrelVortexBackendConfig;
+    use super::{
+        MANDREL_VORTEX_STATUS_INVALID_ARGUMENT, MandrelVortexBackend, MandrelVortexBackendConfig,
+        mandrel_vortex_backend_create, mandrel_vortex_last_error_message,
+    };
+    use std::ffi::CStr;
     use std::mem::size_of;
     use std::ptr;
 
@@ -252,5 +262,30 @@ mod tests {
 
         assert_eq!(config.device_index, 0);
         assert!(config.runtime_library_path.is_null());
+    }
+
+    #[test]
+    fn backend_create_rejects_nonzero_reserved_flags_before_runtime_loading() {
+        let config = MandrelVortexBackendConfig {
+            struct_size: size_of::<MandrelVortexBackendConfig>(),
+            runtime_library_path: ptr::null(),
+            device_index: 0,
+            flags: 1,
+        };
+        let mut backend: *mut MandrelVortexBackend = ptr::null_mut();
+
+        // SAFETY: Both pointers reference valid storage for the duration of the call.
+        let status = unsafe { mandrel_vortex_backend_create(&config, &mut backend) };
+
+        assert_eq!(status, MANDREL_VORTEX_STATUS_INVALID_ARGUMENT);
+        assert!(backend.is_null());
+        // SAFETY: The FFI function returns a valid thread-local NUL-terminated string.
+        let message = unsafe { CStr::from_ptr(mandrel_vortex_last_error_message()) };
+        assert!(
+            message
+                .to_bytes()
+                .windows(5)
+                .any(|window| window == b"flags")
+        );
     }
 }

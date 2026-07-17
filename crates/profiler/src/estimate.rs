@@ -24,7 +24,7 @@ impl Ratio {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KernelMetrics {
     pub logical_macs: usize,
-    pub scheduled_macs: usize,
+    pub lowered_macs: usize,
     pub kernel_launches: usize,
     pub workgroup_count: usize,
     pub thread_count: usize,
@@ -34,9 +34,17 @@ pub struct KernelMetrics {
 }
 
 impl KernelMetrics {
-    pub fn operational_intensity(self) -> Option<Ratio> {
+    pub fn logical_operational_intensity(self) -> Option<Ratio> {
         Ratio::new(
-            self.scheduled_macs,
+            self.logical_macs,
+            self.global_bytes_read
+                .checked_add(self.global_bytes_written)?,
+        )
+    }
+
+    pub fn lowered_operational_intensity(self) -> Option<Ratio> {
+        Ratio::new(
+            self.lowered_macs,
             self.global_bytes_read
                 .checked_add(self.global_bytes_written)?,
         )
@@ -72,46 +80,25 @@ pub fn estimate_gpu_attention_prefill(
 ) -> Option<KernelMetrics> {
     let counts = input.schedule.tile_counts(input.shape)?;
     let workgroup_count = counts.workgroups()?;
-    let logical_score_macs = input
-        .shape
-        .sequence
-        .checked_mul(input.shape.sequence)?
-        .checked_mul(input.shape.head_dim)?;
+    let sequence_squared = input.shape.sequence.checked_mul(input.shape.sequence)?;
+    let output_elements = input.shape.sequence.checked_mul(input.shape.head_dim)?;
+    let logical_score_macs = sequence_squared.checked_mul(input.shape.head_dim)?;
     let logical_value_macs = logical_score_macs;
     let logical_macs = logical_score_macs.checked_add(logical_value_macs)?;
 
-    let scheduled_score_macs = counts
-        .query_blocks
-        .checked_mul(counts.key_blocks)?
-        .checked_mul(input.schedule.tile.query)?
-        .checked_mul(input.schedule.tile.key)?
-        .checked_mul(input.schedule.tile.head_dim)?;
-    let scheduled_macs = scheduled_score_macs.checked_mul(2)?;
-
-    let q_tile_bytes = input
-        .schedule
-        .tile
-        .query
-        .checked_mul(input.schedule.tile.head_dim)?
-        .checked_mul(input.element_type.byte_size())?;
-    let k_tile_bytes = input
-        .schedule
-        .tile
-        .key
-        .checked_mul(input.schedule.tile.head_dim)?
-        .checked_mul(input.element_type.byte_size())?;
-    let v_tile_bytes = k_tile_bytes;
-    let q_bytes_read = q_tile_bytes.checked_mul(counts.query_blocks)?;
-    let kv_tile_bytes = k_tile_bytes.checked_add(v_tile_bytes)?;
-    let kv_bytes_read = kv_tile_bytes
-        .checked_mul(counts.query_blocks)?
-        .checked_mul(counts.key_blocks)?;
-    let global_bytes_read = q_bytes_read.checked_add(kv_bytes_read)?;
-    let global_bytes_written = input
-        .shape
-        .sequence
+    // The current scalar lowering recomputes the full QK row twice for every output dimension.
+    let lowered_qk_macs = logical_score_macs
         .checked_mul(input.shape.head_dim)?
-        .checked_mul(input.out_type.byte_size())?;
+        .checked_mul(2)?;
+    let lowered_macs = lowered_qk_macs.checked_add(logical_value_macs)?;
+
+    // Every scalar QK MAC loads one Q and one K element; every value MAC loads one V element.
+    let qk_bytes_read = lowered_qk_macs
+        .checked_mul(2)?
+        .checked_mul(input.element_type.byte_size())?;
+    let value_bytes_read = logical_value_macs.checked_mul(input.element_type.byte_size())?;
+    let global_bytes_read = qk_bytes_read.checked_add(value_bytes_read)?;
+    let global_bytes_written = output_elements.checked_mul(input.out_type.byte_size())?;
     let local_memory_bytes_per_workgroup = input
         .schedule
         .local_memory_bytes_per_workgroup(input.element_type.byte_size())?;
@@ -119,7 +106,7 @@ pub fn estimate_gpu_attention_prefill(
 
     Some(KernelMetrics {
         logical_macs,
-        scheduled_macs,
+        lowered_macs,
         kernel_launches: 1,
         workgroup_count,
         thread_count,
@@ -137,10 +124,10 @@ mod tests {
     use mandrel_schedule::AttentionPrefillSchedule;
 
     #[test]
-    fn estimates_attention_prefill_schedule() {
+    fn estimates_executed_scalar_attention_prefill_lowering() {
         let metrics = match estimate_gpu_attention_prefill(AttentionPrefillEstimateInput::new(
             AttentionShape::new(64, 64),
-            AttentionPrefillSchedule::dense_online_4x16x64(),
+            AttentionPrefillSchedule::dense_scalar_two_pass_4x1x64(),
             ElementType::I8,
             ElementType::I8,
         )) {
@@ -149,10 +136,11 @@ mod tests {
         };
 
         assert_eq!(metrics.logical_macs, 524_288);
-        assert_eq!(metrics.scheduled_macs, 524_288);
+        assert_eq!(metrics.lowered_macs, 33_816_576);
         assert_eq!(metrics.workgroup_count, 16);
         assert_eq!(metrics.thread_count, 256);
-        assert_eq!(metrics.global_bytes_read, 135_168);
-        assert_eq!(metrics.local_memory_bytes_per_workgroup, 2336);
+        assert_eq!(metrics.global_bytes_read, 67_371_008);
+        assert_eq!(metrics.global_bytes_written, 4_096);
+        assert_eq!(metrics.local_memory_bytes_per_workgroup, 0);
     }
 }

@@ -1,5 +1,6 @@
 use mandrel_core::ElementType;
-use mandrel_model_ir::{AttentionOp, AttentionShape, TargetConstraints};
+use mandrel_model_ir::{AttentionOp, AttentionShape};
+use mandrel_target_ir::TargetConstraints;
 
 use crate::error::ScheduleError;
 use crate::layout::ThreadBlock2D;
@@ -36,8 +37,8 @@ pub enum AttentionKvLayout {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttentionSoftmaxStrategy {
-    /// Online max/sum reduction so a score row can be streamed block by block.
-    OnlineMaxSum,
+    /// Scan the full key row for its maximum, then scan it again for normalization and output.
+    TwoPassStable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,15 +64,14 @@ impl AttentionPrefillSchedule {
         }
     }
 
-    /// First Vortex prefill candidate: one workgroup owns a small query block and streams key/value
-    /// blocks with an online-softmax contract. The dense layout keeps the smoke path simple while
-    /// retaining explicit tile fields needed by paged-attention lowering later.
-    pub const fn dense_online_4x16x64() -> Self {
+    /// Executable Vortex baseline: a workgroup owns four query rows and up to 64 output
+    /// dimensions, while keys are traversed one at a time with direct global-memory loads.
+    pub const fn dense_scalar_two_pass_4x1x64() -> Self {
         Self::new(
-            AttentionTileShape::new(4, 16, 64),
+            AttentionTileShape::new(4, 1, 64),
             ThreadBlock2D::new(4, 4),
             AttentionKvLayout::DenseContiguous,
-            AttentionSoftmaxStrategy::OnlineMaxSum,
+            AttentionSoftmaxStrategy::TwoPassStable,
         )
     }
 
@@ -87,30 +87,16 @@ impl AttentionPrefillSchedule {
         })
     }
 
-    pub fn local_memory_bytes_per_workgroup(self, element_bytes: usize) -> Option<usize> {
-        let query_tile = self
-            .tile
-            .query
-            .checked_mul(self.tile.head_dim)?
-            .checked_mul(element_bytes)?;
-        let key_tile = self
-            .tile
-            .key
-            .checked_mul(self.tile.head_dim)?
-            .checked_mul(element_bytes)?;
-        let value_tile = key_tile;
-        let softmax_state = self.tile.query.checked_mul(2)?.checked_mul(4)?;
-
-        query_tile
-            .checked_add(key_tile)?
-            .checked_add(value_tile)?
-            .checked_add(softmax_state)
+    pub const fn local_memory_bytes_per_workgroup(self, _element_bytes: usize) -> Option<usize> {
+        match self.softmax {
+            AttentionSoftmaxStrategy::TwoPassStable => Some(0),
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttentionKernelKind {
-    PrefillOnlineSoftmax,
+    PrefillScalarTwoPass,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,16 +106,16 @@ pub struct AttentionPrefillScheduleCandidate {
 }
 
 impl AttentionPrefillScheduleCandidate {
-    pub const fn dense_online_4x16x64() -> Self {
+    pub const fn dense_scalar_two_pass_4x1x64() -> Self {
         Self {
-            kernel: AttentionKernelKind::PrefillOnlineSoftmax,
-            schedule: AttentionPrefillSchedule::dense_online_4x16x64(),
+            kernel: AttentionKernelKind::PrefillScalarTwoPass,
+            schedule: AttentionPrefillSchedule::dense_scalar_two_pass_4x1x64(),
         }
     }
 }
 
 pub const VORTEX_ATTENTION_PREFILL_CANDIDATES: [AttentionPrefillScheduleCandidate; 1] =
-    [AttentionPrefillScheduleCandidate::dense_online_4x16x64()];
+    [AttentionPrefillScheduleCandidate::dense_scalar_two_pass_4x1x64()];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttentionTileCounts {
@@ -174,7 +160,10 @@ pub fn select_vortex_attention_prefill_schedule(
 
     for candidate in VORTEX_ATTENTION_PREFILL_CANDIDATES {
         let schedule = candidate.schedule;
-        if schedule.block.thread_count() > constraints.max_workgroup_threads {
+        let Ok(thread_count) = u32::try_from(schedule.block.thread_count()) else {
+            continue;
+        };
+        if thread_count > constraints.max_workgroup_threads {
             continue;
         }
         let Some(tile_counts) = schedule.tile_counts(op.shape) else {
@@ -185,7 +174,10 @@ pub fn select_vortex_attention_prefill_schedule(
         else {
             return Err(ScheduleError::ShapeOverflow);
         };
-        if local_memory_bytes_per_workgroup > constraints.local_memory_bytes {
+        let Ok(local_memory_bytes) = u32::try_from(local_memory_bytes_per_workgroup) else {
+            continue;
+        };
+        if local_memory_bytes > constraints.local_memory_bytes {
             continue;
         }
 
@@ -201,11 +193,24 @@ pub fn select_vortex_attention_prefill_schedule(
 
 #[cfg(test)]
 mod tests {
-    use super::{AttentionPrefillSchedule, select_vortex_attention_prefill_schedule};
-    use mandrel_model_ir::{AttentionOp, TargetConstraints};
+    use super::{
+        AttentionPrefillSchedule, TargetConstraints, select_vortex_attention_prefill_schedule,
+    };
+    use mandrel_model_ir::AttentionOp;
+    use mandrel_target_ir::DeviceBackend;
 
     #[test]
-    fn selects_dense_online_prefill_schedule_for_demo_attention() {
+    fn vortex_constraints_come_from_device_capabilities() {
+        let constraints = TargetConstraints::vortex_simx_default();
+
+        assert_eq!(constraints.target, DeviceBackend::VortexSimx);
+        assert_eq!(constraints.max_workgroup_threads, 16);
+        assert_eq!(constraints.preferred_subgroup_width, 4);
+        assert_eq!(constraints.local_memory_bytes, 16 * 1024);
+    }
+
+    #[test]
+    fn selects_dense_scalar_two_pass_schedule_for_demo_attention() {
         let selection = match select_vortex_attention_prefill_schedule(
             AttentionOp::prefill_i8_demo(),
             TargetConstraints::vortex_simx_default(),
@@ -216,11 +221,11 @@ mod tests {
 
         assert_eq!(
             selection.schedule(),
-            AttentionPrefillSchedule::dense_online_4x16x64()
+            AttentionPrefillSchedule::dense_scalar_two_pass_4x1x64()
         );
         assert_eq!(selection.tile_counts.query_blocks, 16);
-        assert_eq!(selection.tile_counts.key_blocks, 4);
+        assert_eq!(selection.tile_counts.key_blocks, 64);
         assert_eq!(selection.tile_counts.workgroups(), Some(16));
-        assert_eq!(selection.local_memory_bytes_per_workgroup, 2336);
+        assert_eq!(selection.local_memory_bytes_per_workgroup, 0);
     }
 }

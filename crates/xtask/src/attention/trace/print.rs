@@ -36,6 +36,29 @@ pub(super) fn print_attention_runtime_trace_record(record: AttentionRuntimeTrace
         format_optional_u32(record.metadata.head_dim_tile)
     );
     println!(
+        "  requested_target: backend={} xlen={} max_workgroup_threads={} preferred_subgroup_width={} local_memory_bytes={}",
+        format_optional_device_backend(record.metadata.requested_target_backend),
+        format_optional_u32(record.metadata.requested_target_xlen),
+        format_optional_u32(record.metadata.requested_target_max_workgroup_threads),
+        format_optional_u32(record.metadata.requested_target_preferred_subgroup_width),
+        format_optional_u32(record.metadata.requested_target_local_memory_bytes)
+    );
+    println!(
+        "  observed_target: backend={} xlen={} threads_per_warp={} warps_per_core={} max_workgroup_threads={} preferred_subgroup_width={} local_memory_bytes={}",
+        format_optional_device_backend(record.metadata.observed_target_backend),
+        format_optional_u32(record.metadata.observed_target_xlen),
+        format_optional_u64(record.metadata.target_threads_per_warp),
+        format_optional_u64(record.metadata.target_warps_per_core),
+        format_optional_u64(record.metadata.target_max_workgroup_threads),
+        format_optional_u32(record.metadata.observed_target_preferred_subgroup_width),
+        format_optional_u64(record.metadata.target_local_memory_bytes)
+    );
+    println!(
+        "  target_compatibility: exact={} mismatch_mask={}",
+        format_optional_bool(record.metadata.target_compatible),
+        format_optional_u16(record.metadata.target_mismatch_mask)
+    );
+    println!(
         "  launch: grid=({}, {}, {}) block=({}, {}, {}) shared_memory_bytes={}",
         summary.launch.grid[0],
         summary.launch.grid[1],
@@ -54,11 +77,18 @@ pub(super) fn print_attention_runtime_trace_record(record: AttentionRuntimeTrace
         format_optional_bool(record.metadata.kernel_cache_hit)
     );
     println!(
-        "  workload: logical_macs={} q_elements={} kv_elements={} output_elements={}",
+        "  workload: logical_macs={} lowered_macs={} q_elements={} kv_elements={} output_elements={}",
         format_optional_u64(record_logical_macs(record)),
+        format_optional_u64(record.metadata.lowered_macs),
         format_optional_u64(record.metadata.runtime_q_elements),
         format_optional_u64(record.metadata.runtime_kv_elements),
         format_optional_u64(record_output_elements(record))
+    );
+    println!(
+        "  lowering_memory_estimate: global_read_bytes={} global_write_bytes={} local_bytes_per_workgroup={}",
+        format_optional_u64(record.metadata.estimated_global_bytes_read),
+        format_optional_u64(record.metadata.estimated_global_bytes_written),
+        format_optional_u64(record.metadata.estimated_local_memory_bytes_per_workgroup)
     );
     println!(
         "  memory: q_bytes={} kv_bytes={} output_bytes={} host_to_device_bytes={} device_to_host_bytes={} total_transfer_bytes={}",
@@ -70,18 +100,34 @@ pub(super) fn print_attention_runtime_trace_record(record: AttentionRuntimeTrace
         summary.total_transfer_bytes()
     );
     println!(
-        "  counters: instructions={} cycles={} ipc={}",
-        format_optional_u64(summary.counters.instructions),
-        format_optional_u64(summary.counters.cycles),
+        "\nPerformance counter stats for '{}':",
+        summary.launch.kernel_symbol
+    );
+    println!(
+        "  {:>16}      instructions        # SimX PERF",
+        format_optional_u64(summary.counters.instructions)
+    );
+    println!(
+        "  {:>16}      cycles              # SimX PERF",
+        format_optional_u64(summary.counters.cycles)
+    );
+    println!(
+        "  {:>16}      instructions/cycle  # derived",
         format_ipc(summary.counters)
     );
     println!(
-        "  derived: instrs/output={} cycles/output={} transfer_bytes/output={} cycles/logical_mac={} logical_macs/cycle={} wall_time_ms={}",
+        "  {:>16}      transfer bytes      # runtime events",
+        summary.total_transfer_bytes()
+    );
+    println!(
+        "  derived: instrs/output={} cycles/output={} transfer_bytes/output={} cycles/logical_mac={} logical_macs/cycle={} cycles/lowered_mac={} lowered_macs/cycle={} wall_time_ms={}",
         format_optional_f64(record_instructions_per_output(record)),
         format_optional_f64(record_cycles_per_output(record)),
         format_optional_f64(record_transfer_bytes_per_output(record)),
         format_optional_f64(record_cycles_per_logical_mac(record)),
         format_optional_f64(record_logical_macs_per_cycle(record)),
+        format_optional_f64(record_cycles_per_lowered_mac(record)),
+        format_optional_f64(record_lowered_macs_per_cycle(record)),
         format_optional_u64(record.metadata.wall_time_ms)
     );
 }
@@ -90,6 +136,13 @@ fn print_attention_experiment_result(result: &ExperimentResult) {
     println!("attention.experiment result:");
     println!("  spec_id: {}", result.spec_id);
     println!("  status: {:?}", result.status);
+    println!(
+        "  target: requested={} observed={} compatible={} mismatch_mask={}",
+        result.target.requested.name,
+        result.target.observed.name,
+        result.target.is_compatible(),
+        result.target.compatibility.mismatch_mask()
+    );
     println!("  events: {}", result.events.len());
     println!(
         "  total_transfer_bytes: {}",
@@ -103,141 +156,21 @@ fn print_attention_experiment_result(result: &ExperimentResult) {
     }
 }
 
-pub(super) fn print_compact_trace_record(label: &str, record: AttentionRuntimeTraceRecord) {
-    let summary = record.summary;
-    println!("{label}:");
-    println!(
-        "  runtime: sequence={} head_dim={} query_tile={} key_tile={}",
-        format_optional_u32(record.metadata.runtime_sequence),
-        format_optional_u32(record.metadata.runtime_head_dim),
-        format_optional_u32(record.metadata.query_tile),
-        format_optional_u32(record.metadata.key_tile)
-    );
-    println!(
-        "  workload: logical_macs={} output_elements={} wall_time_ms={}",
-        format_optional_u64(record_logical_macs(record)),
-        format_optional_u64(record_output_elements(record)),
-        format_optional_u64(record.metadata.wall_time_ms)
-    );
-    println!(
-        "  launch: grid={}x{}x{} block={}x{}x{} shared={}",
-        summary.launch.grid[0],
-        summary.launch.grid[1],
-        summary.launch.grid[2],
-        summary.launch.block[0],
-        summary.launch.block[1],
-        summary.launch.block[2],
-        summary.launch.shared_memory_bytes
-    );
-    println!(
-        "  execution: workgroups={} threads/workgroup={} total_threads={} cache(module={}, kernel={})",
-        format_optional_u64(record_workgroup_count(record)),
-        format_optional_u64(record_threads_per_workgroup(record)),
-        format_optional_u64(record_total_threads(record)),
-        format_optional_bool(record.metadata.module_cache_hit),
-        format_optional_bool(record.metadata.kernel_cache_hit)
-    );
-    println!(
-        "  transfers={} instrs={} cycles={} ipc={}",
-        summary.total_transfer_bytes(),
-        format_optional_u64(summary.counters.instructions),
-        format_optional_u64(summary.counters.cycles),
-        format_ipc(summary.counters)
-    );
-    println!(
-        "  derived: instrs/output={} cycles/output={} cycles/mac={} macs/cycle={}",
-        format_optional_f64(record_instructions_per_output(record)),
-        format_optional_f64(record_cycles_per_output(record)),
-        format_optional_f64(record_cycles_per_logical_mac(record)),
-        format_optional_f64(record_logical_macs_per_cycle(record))
-    );
-}
-
-pub(super) fn print_trace_delta(
-    previous: AttentionRuntimeTraceRecord,
-    latest: AttentionRuntimeTraceRecord,
-) {
-    println!("delta latest vs previous:");
-    print_optional_u64_delta(
-        "  instrs",
-        previous.summary.counters.instructions,
-        latest.summary.counters.instructions,
-    );
-    print_optional_u64_delta(
-        "  cycles",
-        previous.summary.counters.cycles,
-        latest.summary.counters.cycles,
-    );
-    print_optional_u64_delta(
-        "  total_transfer_bytes",
-        record_total_transfer_bytes(previous),
-        record_total_transfer_bytes(latest),
-    );
-    print_optional_u64_delta(
-        "  wall_time_ms",
-        previous.metadata.wall_time_ms,
-        latest.metadata.wall_time_ms,
-    );
-    print_optional_f64_delta("  ipc", record_ipc(previous), record_ipc(latest));
-    print_optional_f64_delta(
-        "  instrs/output",
-        record_instructions_per_output(previous),
-        record_instructions_per_output(latest),
-    );
-    print_optional_f64_delta(
-        "  cycles/output",
-        record_cycles_per_output(previous),
-        record_cycles_per_output(latest),
-    );
-    print_optional_f64_delta(
-        "  transfer_bytes/output",
-        record_transfer_bytes_per_output(previous),
-        record_transfer_bytes_per_output(latest),
-    );
-    print_optional_f64_delta(
-        "  cycles/logical_mac",
-        record_cycles_per_logical_mac(previous),
-        record_cycles_per_logical_mac(latest),
-    );
-    print_optional_f64_delta(
-        "  logical_macs/cycle",
-        record_logical_macs_per_cycle(previous),
-        record_logical_macs_per_cycle(latest),
-    );
-}
-
-pub(super) fn print_optional_u64_delta(label: &str, previous: Option<u64>, latest: Option<u64>) {
-    match (previous, latest) {
-        (Some(previous), Some(latest)) => {
-            let delta = latest as i128 - previous as i128;
-            println!(
-                "{label}: {delta:+} ({}) latest={latest}",
-                format_ratio_delta(previous as f64, latest as f64)
-            );
-        }
-        _ => println!("{label}: <missing>"),
+pub(super) fn format_optional_device_backend(value: Option<DeviceBackend>) -> &'static str {
+    match value {
+        Some(DeviceBackend::HostReference) => "host_reference",
+        Some(DeviceBackend::VortexSimx) => "vortex_simx",
+        Some(DeviceBackend::VortexRtl) => "vortex_rtl",
+        Some(DeviceBackend::VortexFpga) => "vortex_fpga",
+        None => "<missing>",
     }
 }
 
-pub(super) fn print_optional_f64_delta(label: &str, previous: Option<f64>, latest: Option<f64>) {
-    match (previous, latest) {
-        (Some(previous), Some(latest)) => {
-            let delta = latest - previous;
-            println!(
-                "{label}: {delta:+.3} ({}) latest={latest:.3}",
-                format_ratio_delta(previous, latest)
-            );
-        }
-        _ => println!("{label}: <missing>"),
+pub(super) fn format_optional_u16(value: Option<u16>) -> String {
+    match value {
+        Some(value) => value.to_string(),
+        None => "<missing>".to_owned(),
     }
-}
-
-pub(super) fn format_ratio_delta(previous: f64, latest: f64) -> String {
-    if previous == 0.0 {
-        return "n/a".to_owned();
-    }
-    let percent = ((latest - previous) / previous) * 100.0;
-    format!("{percent:+.2}%")
 }
 
 pub(super) fn format_optional_u64(value: Option<u64>) -> String {
@@ -273,13 +206,6 @@ pub(super) fn format_ipc(counters: KernelCounterTrace) -> String {
     format_optional_f64(counter_ratio(counters.instructions, counters.cycles))
 }
 
-fn record_ipc(record: AttentionRuntimeTraceRecord) -> Option<f64> {
-    counter_ratio(
-        record.summary.counters.instructions,
-        record.summary.counters.cycles,
-    )
-}
-
 fn record_instructions_per_output(record: AttentionRuntimeTraceRecord) -> Option<f64> {
     counter_ratio(
         record.summary.counters.instructions,
@@ -307,6 +233,14 @@ fn record_cycles_per_logical_mac(record: AttentionRuntimeTraceRecord) -> Option<
 
 fn record_logical_macs_per_cycle(record: AttentionRuntimeTraceRecord) -> Option<f64> {
     counter_ratio(record_logical_macs(record), record.summary.counters.cycles)
+}
+
+fn record_cycles_per_lowered_mac(record: AttentionRuntimeTraceRecord) -> Option<f64> {
+    counter_ratio(record.summary.counters.cycles, record.metadata.lowered_macs)
+}
+
+fn record_lowered_macs_per_cycle(record: AttentionRuntimeTraceRecord) -> Option<f64> {
+    counter_ratio(record.metadata.lowered_macs, record.summary.counters.cycles)
 }
 
 fn counter_ratio(numerator: Option<u64>, denominator: Option<u64>) -> Option<f64> {

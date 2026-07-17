@@ -1,0 +1,15 @@
+schema = "mandrel.hardware.source-lock.v1"
+
+[vortex]
+repository = "https://github.com/vortexgpgpu/vortex.git"
+revision = "c992f3f35fa17b83dcc83648a5ac4014b0ea0ac6"
+checkout = "external/vortex"
+
+[llvm_vortex]
+repository = "https://github.com/devillove084/llvm.git"
+revision = "b2ecfe086df2d00233a87f3d3ebe6a74aba129e2"
+checkout = "external/llvm-vortex"
+
+[policy]
+external_checkouts_are_generated = true
+tracked_inputs_live_under = "hardware/vortex"

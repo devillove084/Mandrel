@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::string::FromUtf8Error;
 
+use mandrel_artifact::VortexMlirKernelArtifacts;
 use snafu::Snafu;
 
 pub const DEFAULT_VORTEX_DIR: &str = "external/vortex";
@@ -365,31 +366,6 @@ pub trait VortexCommandRunner {
     fn run(&mut self, phase: &str, command: Command) -> VortexToolchainResult<()>;
 
     fn output(&mut self, phase: &str, command: Command) -> VortexToolchainResult<Output>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VortexMlirKernelArtifacts {
-    pub mlir_path: PathBuf,
-    pub ll_path: PathBuf,
-    pub obj_path: PathBuf,
-    pub startup_probe_elf_path: PathBuf,
-    pub startup_object_path: PathBuf,
-    pub elf_path: PathBuf,
-    pub vxbin_path: PathBuf,
-}
-
-impl VortexMlirKernelArtifacts {
-    pub fn under_output_dir(out_dir: &Path, symbol_name: &str) -> Self {
-        Self {
-            mlir_path: out_dir.join(format!("{symbol_name}.mlir")),
-            ll_path: out_dir.join(format!("{symbol_name}.ll")),
-            obj_path: out_dir.join(format!("{symbol_name}.o")),
-            startup_probe_elf_path: out_dir.join(format!("{symbol_name}.startup_probe.elf")),
-            startup_object_path: out_dir.join(format!("{symbol_name}.vx_start.o")),
-            elf_path: out_dir.join(format!("{symbol_name}.elf")),
-            vxbin_path: out_dir.join(format!("{symbol_name}.vxbin")),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]

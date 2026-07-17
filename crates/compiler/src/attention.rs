@@ -1,15 +1,18 @@
 use mandrel_core::ElementType;
-use mandrel_kernel_ir::{Dim3, KernelArg, KernelLaunch, KernelSymbol, kernel_spec};
-use mandrel_model_ir::{AttentionOp, Quantization, TargetConstraints};
+use mandrel_kernel_ir::{
+    ATTENTION_PREFILL_I8_ARG_COUNT, Dim3, KernelArg, KernelLaunch, KernelSymbol, kernel_spec,
+};
+use mandrel_model_ir::{AttentionOp, Quantization};
 use mandrel_profiler::{AttentionPrefillEstimateInput, estimate_gpu_attention_prefill};
 use mandrel_schedule::{
     AttentionKernelKind, AttentionKvLayout, AttentionPrefillSchedule,
     AttentionPrefillScheduleSelection, Layout2D, select_vortex_attention_prefill_schedule,
 };
+use mandrel_target_ir::TargetConstraints;
 
 use crate::plan::{CompileError, VortexKernelPlan, usize_to_u32};
 
-pub const VORTEX_ATTENTION_PREFILL_ARG_COUNT: usize = 8;
+pub const VORTEX_ATTENTION_PREFILL_ARG_COUNT: usize = ATTENTION_PREFILL_I8_ARG_COUNT;
 pub const VORTEX_ATTENTION_Q_BUFFER: u32 = 0;
 pub const VORTEX_ATTENTION_K_BUFFER: u32 = 1;
 pub const VORTEX_ATTENTION_V_BUFFER: u32 = 2;
@@ -94,10 +97,16 @@ pub struct AttentionPrefillPlanMetadata {
 pub fn compile_vortex_attention_prefill_kernel(
     op: AttentionOp,
 ) -> Result<VortexAttentionPrefillPlan, CompileError> {
+    compile_vortex_attention_prefill_kernel_for_target(op, TargetConstraints::vortex_simx_default())
+}
+
+pub fn compile_vortex_attention_prefill_kernel_for_target(
+    op: AttentionOp,
+    constraints: TargetConstraints,
+) -> Result<VortexAttentionPrefillPlan, CompileError> {
     validate_attention_prefill_op(op)?;
-    let selection =
-        select_vortex_attention_prefill_schedule(op, TargetConstraints::vortex_simx_default())
-            .map_err(|source| CompileError::ScheduleSelectionFailed { source })?;
+    let selection = select_vortex_attention_prefill_schedule(op, constraints)
+        .map_err(|source| CompileError::ScheduleSelectionFailed { source })?;
     compile_selected_vortex_attention_prefill_kernel(op, selection)
 }
 
@@ -170,7 +179,7 @@ fn compile_selected_vortex_attention_prefill_kernel(
 
 pub const fn attention_kernel_symbol(kind: AttentionKernelKind) -> KernelSymbol {
     match kind {
-        AttentionKernelKind::PrefillOnlineSoftmax => KernelSymbol::AttentionPrefillI8,
+        AttentionKernelKind::PrefillScalarTwoPass => KernelSymbol::AttentionPrefillI8,
     }
 }
 
@@ -256,29 +265,32 @@ mod tests {
         VORTEX_ATTENTION_HEAD_DIM_ARG, VORTEX_ATTENTION_KEY_TILE_ARG,
         VORTEX_ATTENTION_QUERY_TILE_ARG, VORTEX_ATTENTION_SEQUENCE_ARG, attention_kernel_symbol,
         compile_vortex_attention_prefill_kernel,
+        compile_vortex_attention_prefill_kernel_for_target,
     };
     use mandrel_kernel_ir::{KernelArgValue, KernelAvailability, KernelSymbol};
     use mandrel_model_ir::{AttentionOp, Quantization};
     use mandrel_schedule::{AttentionKernelKind, Layout2D};
+    use mandrel_target_ir::TargetConstraints;
 
     #[test]
-    fn compiles_demo_to_planned_attention_prefill_launch() {
+    fn compiles_demo_to_available_attention_prefill_launch() {
         let plan = match compile_vortex_attention_prefill_kernel(AttentionOp::prefill_i8_demo()) {
             Ok(plan) => plan,
             Err(error) => panic!("unexpected compile error: {error:?}"),
         };
 
-        assert_eq!(plan.kernel.availability, KernelAvailability::Planned);
+        assert_eq!(plan.kernel.availability, KernelAvailability::Available);
         assert_eq!(plan.launch.symbol, KernelSymbol::AttentionPrefillI8);
         assert_eq!(plan.launch.grid.x, 16);
         assert_eq!(plan.launch.grid.z, 1);
         assert_eq!(plan.launch.block.x, 4);
         assert_eq!(plan.launch.block.y, 4);
-        assert_eq!(plan.launch.shared_memory_bytes, 2336);
+        assert_eq!(plan.launch.shared_memory_bytes, 0);
         assert_eq!(plan.launch.args[4].value, KernelArgValue::U32(64));
         assert_eq!(plan.launch.args[6].value, KernelArgValue::U32(4));
-        assert_eq!(plan.launch.args[7].value, KernelArgValue::U32(16));
+        assert_eq!(plan.launch.args[7].value, KernelArgValue::U32(1));
         assert_eq!(plan.metrics.workgroup_count, 16);
+        assert_eq!(plan.metrics.lowered_macs, 33_816_576);
 
         assert_eq!(plan.metadata.arg_count, 8);
         assert_eq!(
@@ -324,9 +336,22 @@ mod tests {
     }
 
     #[test]
+    fn target_constraints_participate_in_schedule_selection() {
+        let mut constraints = TargetConstraints::vortex_simx_default();
+        constraints.max_workgroup_threads = 1;
+
+        let result = compile_vortex_attention_prefill_kernel_for_target(
+            AttentionOp::prefill_i8_demo(),
+            constraints,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn maps_attention_kernel_kind_to_symbol() {
         assert_eq!(
-            attention_kernel_symbol(AttentionKernelKind::PrefillOnlineSoftmax),
+            attention_kernel_symbol(AttentionKernelKind::PrefillScalarTwoPass),
             KernelSymbol::AttentionPrefillI8
         );
     }

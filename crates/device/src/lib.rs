@@ -4,39 +4,6 @@ use mandrel_core::ElementType;
 use mandrel_kernel_ir::KernelLaunch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceBackend {
-    HostReference,
-    VortexSimx,
-    VortexRtl,
-    VortexFpga,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeviceCapabilities {
-    pub backend: DeviceBackend,
-    pub xlen: u32,
-    pub max_workgroup_threads: u32,
-    pub local_memory_bytes: u32,
-    pub supports_int8: bool,
-    pub supports_float32: bool,
-    pub supports_tensor_cores: bool,
-}
-
-impl DeviceCapabilities {
-    pub const fn vortex_simx_default() -> Self {
-        Self {
-            backend: DeviceBackend::VortexSimx,
-            xlen: 64,
-            max_workgroup_threads: 16,
-            local_memory_bytes: 32 * 1024,
-            supports_int8: true,
-            supports_float32: true,
-            supports_tensor_cores: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferId(pub u32);
 
 impl BufferId {
@@ -103,17 +70,8 @@ impl<const COMMANDS: usize, const ARGS: usize> CommandBuffer<COMMANDS, ARGS> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BufferId, CommandBuffer, DeviceCapabilities, DeviceCommand};
+    use super::{BufferId, CommandBuffer, DeviceCommand};
     use mandrel_kernel_ir::{Dim3, KernelArg, KernelLaunch, KernelSymbol};
-
-    #[test]
-    fn default_vortex_caps_match_current_simx_config() {
-        let caps = DeviceCapabilities::vortex_simx_default();
-
-        assert_eq!(caps.xlen, 64);
-        assert!(caps.supports_int8);
-        assert_eq!(caps.max_workgroup_threads, 16);
-    }
 
     #[test]
     fn command_buffer_wraps_kernel_launch() {
