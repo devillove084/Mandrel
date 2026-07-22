@@ -5,7 +5,10 @@ use mandrel_vortex_backend::{
     VortexConfig, VortexKernelBuildOutputs, VortexMlirKernelBuildRequest,
     build_vortex_mlir_kernel_artifacts,
 };
-use mandrel_vortex_codegen::generate_vortex_attention_prefill_mlir;
+use mandrel_vortex_codegen::{
+    VORTEX_HARDWARE_IDENTITY_PROBE_SYMBOL, generate_vortex_attention_prefill_mlir,
+    generate_vortex_hardware_identity_probe_mlir,
+};
 
 use crate::Result;
 use crate::command::XtaskCommandRunner;
@@ -37,11 +40,12 @@ pub(super) fn generate_vortex_attention_artifacts(
                 generated.format.extension(),
                 generated.required_headers
             );
-            let outputs = validate_attention_mlir_with_vortex_llvm(
+            let outputs = validate_mlir_with_vortex_llvm(
                 workspace_root,
                 &config,
                 generated.symbol.as_str(),
                 &generated.source,
+                "attention",
             )?;
             println!("generated MLIR written to: {}", outputs.mlir_path.display());
             println!(
@@ -66,11 +70,31 @@ pub(super) fn generate_vortex_attention_artifacts(
     }
 }
 
-fn validate_attention_mlir_with_vortex_llvm(
+pub(super) fn generate_vortex_hardware_identity_probe_artifacts(
+    workspace_root: &Path,
+    config: &VortexConfig,
+) -> Result<VortexKernelBuildOutputs> {
+    let source = generate_vortex_hardware_identity_probe_mlir();
+    let outputs = validate_mlir_with_vortex_llvm(
+        workspace_root,
+        config,
+        VORTEX_HARDWARE_IDENTITY_PROBE_SYMBOL,
+        &source,
+        "hardware_identity",
+    )?;
+    println!(
+        "generated hardware identity probe vxbin: {}",
+        outputs.vxbin_path.display()
+    );
+    Ok(outputs)
+}
+
+fn validate_mlir_with_vortex_llvm(
     workspace_root: &Path,
     config: &VortexConfig,
     symbol_name: &str,
     source: &str,
+    phase_prefix: &str,
 ) -> Result<VortexKernelBuildOutputs> {
     let outputs = VortexKernelBuildOutputs::under_output_dir(
         &workspace_root.join("target/mandrel/vortex"),
@@ -84,7 +108,7 @@ fn validate_attention_mlir_with_vortex_llvm(
             symbol_name,
             source,
             outputs: &outputs,
-            phase_prefix: "attention",
+            phase_prefix,
         },
         &mut runner,
     )?;

@@ -128,6 +128,31 @@ impl CompilerTargetSpec {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareIdentityEvidence {
+    pub configuration_sha256: String,
+    pub realized_config_tag: u64,
+    pub observed_rtl_config_tag: u64,
+}
+
+impl HardwareIdentityEvidence {
+    pub fn new(
+        configuration_sha256: impl Into<String>,
+        realized_config_tag: u64,
+        observed_rtl_config_tag: u64,
+    ) -> Self {
+        Self {
+            configuration_sha256: configuration_sha256.into(),
+            realized_config_tag,
+            observed_rtl_config_tag,
+        }
+    }
+
+    pub const fn association_tag_matches(&self) -> bool {
+        self.realized_config_tag == self.observed_rtl_config_tag
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HardwareRealizationKind {
     RtlSimulation,
@@ -180,8 +205,8 @@ impl RealizedHardwareManifest {
 #[cfg(test)]
 mod tests {
     use super::{
-        CURRENT_VORTEX_REVISION, HardwareDesignSpec, HardwareRealizationKind,
-        RealizedHardwareManifest, VortexHardwareParameters,
+        CURRENT_VORTEX_REVISION, HardwareDesignSpec, HardwareIdentityEvidence,
+        HardwareRealizationKind, RealizedHardwareManifest, VortexHardwareParameters,
     };
     use mandrel_target_ir::{DeviceBackend, DeviceCapabilities, TargetSpec};
 
@@ -199,6 +224,15 @@ mod tests {
             target.device_capabilities(),
             DeviceCapabilities::vortex_rtl_default()
         );
+    }
+
+    #[test]
+    fn hardware_identity_requires_realized_and_observed_association_tags_to_match() {
+        let matching = HardwareIdentityEvidence::new("abc", 0x1234, 0x1234);
+        let drifted = HardwareIdentityEvidence::new("abc", 0x1234, 0x5678);
+
+        assert!(matching.association_tag_matches());
+        assert!(!drifted.association_tag_matches());
     }
 
     #[test]

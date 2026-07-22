@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mandrel Project <mandrel@example.invalid>
+Date: Wed, 22 Jul 2026 00:00:00 +0000
+Subject: [PATCH] rtl: expose Mandrel configuration identity CSR
+
+Expose the 64-bit tag generated from Mandrel's canonical resolved Vortex
+configuration through a read-only custom CSR. The generated VX_mandrel.vh
+header supplies the value, while VX_types.toml remains the single CSR address
+source for RTL and kernel headers.
+
+Pinned Vortex revision: c992f3f35fa17b83dcc83648a5ac4014b0ea0ac6
+Hardware variable: canonical resolved Vortex configuration identity.
+CSR contract: read-only machine custom CSR 0xFC5 returns the 64-bit tag.
+Compiler/ISA exposure: zicsr read via helper or inline assembly; no new opcode.
+Correctness: a one-thread probe kernel compares the observed tag before
+attention performance evidence is accepted.
+Synthesis impact: one constant CSR decode entry and a 64-bit constant mux input.
+---
+ VX_types.toml                     | 1 +
+ hw/rtl/core/VX_csr_data.sv        | 2 ++
+ sw/kernel/include/vx_intrinsics.h | 7 +++++++
+ 3 files changed, 10 insertions(+)
+
+diff --git a/VX_types.toml b/VX_types.toml
+index 58e6c63..35921ba 100644
+--- a/VX_types.toml
++++ b/VX_types.toml
+@@ -361,6 +361,7 @@ VX_CSR_NUM_WARPS = 0xFC1
+ VX_CSR_NUM_CORES = 0xFC2
+ VX_CSR_LOCAL_MEM_BASE = 0xFC3
+ VX_CSR_NUM_BARRIERS = 0xFC4
++VX_CSR_MANDREL_CONFIG_ID = 0xFC5
+ 
+ [csr_cta]
+ VX_CSR_CTA_ID   = 0xCD0  # local CTA index
+diff --git a/hw/rtl/core/VX_csr_data.sv b/hw/rtl/core/VX_csr_data.sv
+index 696441f..6677215 100644
+--- a/hw/rtl/core/VX_csr_data.sv
++++ b/hw/rtl/core/VX_csr_data.sv
+@@ -12,6 +12,7 @@
+ // limitations under the License.
+ 
+ `include "VX_define.vh"
++`include "VX_mandrel.vh"
+ 
+ `ifdef VX_CFG_EXT_F_ENABLE
+ `include "VX_fpu_define.vh"
+@@ -232,6 +233,7 @@ import VX_fpu_pkg::*;
+             `VX_CSR_NUM_CORES  : read_data_ro_w = `VX_CFG_XLEN'(`VX_CFG_NUM_CORES * `VX_CFG_NUM_CLUSTERS);
+             `VX_CSR_LOCAL_MEM_BASE: read_data_ro_w = `VX_CFG_XLEN'(`VX_MEM_LMEM_BASE_ADDR);
+             `VX_CSR_NUM_BARRIERS: read_data_ro_w = `VX_CFG_XLEN'(`VX_CFG_NUM_BARRIERS);
++            `VX_CSR_MANDREL_CONFIG_ID: read_data_ro_w = `VX_CFG_XLEN'(`VX_CFG_MANDREL_CONFIG_ID);
+ 
+             `CSR_READ_64(`VX_CSR_MCYCLE, read_data_ro_w, sched_csr_if.cycles);
+             `CSR_READ_64(`VX_CSR_MINSTRET, read_data_ro_w, sched_csr_if.instret);
+diff --git a/sw/kernel/include/vx_intrinsics.h b/sw/kernel/include/vx_intrinsics.h
+index 30b8e13..c40df69 100644
+--- a/sw/kernel/include/vx_intrinsics.h
++++ b/sw/kernel/include/vx_intrinsics.h
+@@ -217,6 +217,13 @@ inline __attribute__((const)) int vx_num_barriers() {
+     return ret;
+ }
+ 
++// Return the Mandrel-resolved RTL configuration identity tag
++inline __attribute__((const)) uint64_t vx_mandrel_config_id() {
++    uint64_t ret;
++    __asm__ volatile ("csrr %0, %1" : "=r"(ret) : "i"(VX_CSR_MANDREL_CONFIG_ID));
++    return ret;
++}
++
+ // Return the hart identifier (thread id accross the processor)
+ inline __attribute__((const)) int vx_hart_id() {
+     int ret;

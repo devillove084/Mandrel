@@ -2,7 +2,7 @@
 
 Mandrel's roadmap is organized around **evidence gates**, not crate count or kernel count. A phase is complete only when its design variables, artifacts, correctness, provenance, backend, and evidence class are captured by a reproducible experiment.
 
-The current anchor is one exact-correct dense attention baseline running Vortex SystemVerilog RTL through the pinned project-local Verilator RTLSim. The next objective is to bind that executable control to complete configuration/build identities, then progressively strengthen software semantics and the FPGA/synthesis evidence ladder.
+The current anchor is one exact-correct dense attention baseline running Vortex SystemVerilog RTL through the pinned project-local Verilator RTLSim, with a canonical resolved-config identity observed through RTL before performance evidence is accepted. The next objective is to complete source/build provenance and derive all compiler-facing target facts from that materialization, then progressively strengthen software semantics and the FPGA/synthesis evidence ladder.
 
 ## Operating constraint
 
@@ -34,8 +34,9 @@ Baseline:
 - `0 B` local memory per workgroup;
 - textual LLVM-dialect MLIR → LLVM IR → RV64 object → startup-aware ELF → `.vxbin`;
 - Vortex SystemVerilog execution through the pinned project-local Verilator RTLSim;
+- a pre-execution MLIR/LLVM probe of read-only config-identity CSR `0xFC5` with required realized/observed association-tag matching;
 - exact Rust reference comparison;
-- RTL `PERF` instructions/cycles/IPC and runtime transfer events;
+- RTL `PERF` instructions/cycles/IPC and runtime transfer events, isolated from the probe's device instance;
 - JSON/CSV output labeled with `rtl_simulation` evidence.
 
 Exit criteria:
@@ -46,7 +47,7 @@ Exit criteria:
 
 ## Phase 1 — Canonical target, artifact, and hardware schemas
 
-**Status: initial implementation in this reorganization.**
+**Status: initial schemas plus live resolved-config identity are implemented.**
 
 Delivered boundaries:
 
@@ -57,31 +58,37 @@ Delivered boundaries:
 - `mandrel-vortex-codegen` is separate from the Vortex runtime backend;
 - `hardware/vortex/source.lock.toml` pins Vortex and LLVM-Vortex sources;
 - `hardware/vortex/configs/current-default.toml` tracks the current hardware design point;
-- experiment output is JSON + CSV, with no legacy history path.
+- the resolved Vortex define set is canonicalized and bound to a full SHA-256 plus a 64-bit RTL association tag;
+- experiment JSON/CSV records realized/observed hardware identity, with no legacy history path.
 
 Remaining exit criteria:
 
-- replace the current lightweight output list with typed software-build and hardware-realization manifests carrying content identities;
-- bind resolved config and build identities into the live result instead of placeholder strings;
+- replace the current lightweight output list with typed software-build and complete hardware-realization manifests carrying content identities;
+- bind source revision, patch series, build command/environment, generated-header identities, and tool versions into the live result;
 - derive all compiler-facing target facts from the materialized Vortex configuration;
 - represent compile/runtime/correctness failures in the same result schema.
 
 ## Phase 2 — Hardware materialization and evidence ladder
 
-**Status: the pinned Verilator RTLSim baseline is implemented; complete configuration provenance, synthesis, and FPGA rungs remain.**
+**Status: the first configuration-identity vertical slice is implemented through pinned Verilator RTLSim; complete build provenance, synthesis, and FPGA rungs remain.**
 
-Extend the hardware branch without changing operator semantics first.
+Delivered without changing attention semantics:
 
-Work:
+1. Parse `hardware/vortex/configs/current-default.toml` and map each tracked field to its upstream resolved define.
+2. Invoke the pinned upstream config generator with the same fixed `-DSIMULATION -DSV_DPI` profile used by RTLSim, reject requested/resolved subset drift, and canonicalize the complete resolved define set plus XLEN.
+3. Materialize a full SHA-256 manifest, 64-bit association tag, and generated `VX_mandrel.vh`/`VX_mandrel.h` headers in the isolated Vortex build tree.
+4. Recompute and validate the manifest digest/profile/sidecars in Rust, compile the tag into read-only Vortex CSR `0xFC5`, read it with a generated MLIR/LLVM infrastructure probe, and reject a tag mismatch before attention performance is accepted.
+5. Run the probe in a separate backend/device instance so attention `PERF` counters remain the control measurement.
+6. Record full configuration SHA-256 plus realized/observed tags in JSON and CSV evidence.
 
-1. Parse tracked `HardwareDesignSpec`/Vortex config inputs.
-2. Materialize upstream `VX_config.toml` overrides in an isolated build directory.
-3. Capture generated `VX_config.vh` and `VX_config.h` as artifacts.
-4. Record source SHA, config digest, build command/environment, and tool versions.
-5. Derive `TargetSpec` from the resolved configuration.
-6. Keep the same binary/config pair exact-correct through pinned Verilator RTLSim as configuration materialization evolves.
-7. Add Yosys synthesis artifact and report collection.
-8. Add FPGA realization only after matching RTL correctness is preserved.
+Remaining work:
+
+1. Turn tracked hardware inputs into deliberate upstream config overrides rather than only validating the current pinned upstream resolution.
+2. Capture generated upstream `VX_config.vh` and `VX_config.h`, source revision, patch-series identity, build command/environment, and tool versions in a complete realization manifest.
+3. Derive `TargetSpec` from the resolved configuration instead of duplicated target constants.
+4. Keep the same binary/config pair exact-correct through pinned Verilator RTLSim as configuration materialization evolves.
+5. Add Yosys synthesis artifact and report collection.
+6. Add FPGA realization only after matching RTL correctness is preserved.
 
 Exit criteria:
 
@@ -275,4 +282,4 @@ cargo vortex-generate-attention
 cargo vortex-run-attention
 ```
 
-Future hardware gates extend the current Verilator RTLSim exact-correct gate with complete configuration/build identity, synthesis checks, and FPGA tests.
+Future hardware gates extend the current Verilator RTLSim exact-correct config-identity gate with complete build provenance, synthesis checks, and FPGA tests.

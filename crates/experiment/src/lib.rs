@@ -4,7 +4,7 @@ extern crate alloc;
 
 use alloc::{string::String, vec::Vec};
 use mandrel_device::MemorySpace;
-use mandrel_hardware::HardwareDesignSpec;
+use mandrel_hardware::{HardwareDesignSpec, HardwareIdentityEvidence};
 use mandrel_profiler::{
     KernelCounterTrace, KernelLaunchTrace, RuntimeTraceSummary, TransferDirection,
 };
@@ -251,6 +251,7 @@ pub struct ExperimentResult {
     pub spec_id: &'static str,
     pub status: ExperimentStatus,
     pub target: TargetContract,
+    pub hardware_identity: Option<HardwareIdentityEvidence>,
     pub software_outputs: Vec<SoftwareOutputRef>,
     pub counters: CounterSet,
     pub events: Vec<RuntimeEvent>,
@@ -278,6 +279,7 @@ impl ExperimentResult {
                 ExperimentStatus::Failed
             },
             target,
+            hardware_identity: None,
             software_outputs: Vec::new(),
             counters: CounterSet {
                 kernel: summary.counters,

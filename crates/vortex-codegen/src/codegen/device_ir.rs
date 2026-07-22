@@ -156,6 +156,10 @@ pub enum VortexOp {
         int_ty: LlvmType,
         value: String,
     },
+    CsrReadI64 {
+        result: String,
+        csr: u16,
+    },
     CtaCsrI32 {
         raw64: String,
         raw32: Option<String>,
@@ -282,6 +286,13 @@ impl VortexOp {
             result: result.into(),
             int_ty,
             value: value.into(),
+        }
+    }
+
+    pub fn csr_read_i64(result: impl Into<String>, csr: u16) -> Self {
+        Self::CsrReadI64 {
+            result: result.into(),
+            csr,
         }
     }
 

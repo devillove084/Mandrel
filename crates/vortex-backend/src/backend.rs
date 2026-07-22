@@ -66,6 +66,12 @@ impl Default for VortexBackendConfig {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HardwareIdentityProbeArgs {
+    out_addr: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttentionPrefillI8Args {
     pub q_addr: u64,
     pub k_addr: u64,
@@ -169,6 +175,33 @@ impl VortexBackend {
 
     pub fn device_capabilities(&self) -> Result<VortexDeviceCaps> {
         self.device.capabilities().map_err(VortexBackendError::from)
+    }
+
+    pub fn run_hardware_identity_probe(
+        &mut self,
+        vxbin_path: &Path,
+        kernel_symbol: &'static str,
+    ) -> Result<u64> {
+        backend_runtime_trace("hardware identity: creating output buffer");
+        let output_buffer = self.device.create_buffer(8, VX_MEM_WRITE)?;
+        let args = HardwareIdentityProbeArgs {
+            out_addr: output_buffer.address()?,
+        };
+        let dims = VortexLaunchDims::new([1, 1, 1], [1, 1, 1], 0);
+
+        backend_runtime_trace("hardware identity: loading probe kernel");
+        let kernel_lookup = self
+            .executor
+            .ensure_kernel(&self.device, vxbin_path, kernel_symbol)?;
+        backend_runtime_trace("hardware identity: launching probe kernel");
+        let launch_event = self.launch_cached_kernel(&kernel_lookup.key, &args, 1, dims)?;
+        launch_event.wait()?;
+
+        let mut output = [0u64; 1];
+        backend_runtime_trace("hardware identity: reading observed RTL config tag");
+        let read_event = self.queue.enqueue_read(&mut output, &output_buffer, 0)?;
+        read_event.wait()?;
+        Ok(output[0])
     }
 
     pub fn run_attention_prefill_i8(
@@ -497,9 +530,9 @@ const fn dim3_to_array(dim: Dim3) -> [u32; 3] {
 #[cfg(test)]
 mod tests {
     use super::{
-        AttentionPrefillI8Args, AttentionPrefillI8Run, VortexBackendConfig, VortexBackendError,
-        launch_dims_from_kernel_launch, reference_attention_prefill_i8,
-        validate_launch_dims_against_caps,
+        AttentionPrefillI8Args, AttentionPrefillI8Run, HardwareIdentityProbeArgs,
+        VortexBackendConfig, VortexBackendError, launch_dims_from_kernel_launch,
+        reference_attention_prefill_i8, validate_launch_dims_against_caps,
     };
     use crate::executor::VortexLaunchDims;
     use crate::vortex2::VortexDeviceCaps;
@@ -510,8 +543,14 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn hardware_identity_probe_args_match_single_pointer_abi() {
+        assert_eq!(size_of::<HardwareIdentityProbeArgs>(), 8);
+        assert_eq!(align_of::<HardwareIdentityProbeArgs>(), 8);
+    }
+
+    #[test]
     fn attention_args_match_lowered_abi_layout() {
-        assert_eq!(size_of::<AttentionPrefillI8Args>(), 48);
+        assert_eq!(std::mem::size_of::<AttentionPrefillI8Args>(), 48);
         assert_eq!(align_of::<AttentionPrefillI8Args>(), 8);
     }
 

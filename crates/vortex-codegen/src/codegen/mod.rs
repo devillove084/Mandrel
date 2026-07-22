@@ -5,11 +5,16 @@ use crate::attention_plan::AttentionPlanValidationError;
 
 pub mod attention_mlir;
 pub mod device_ir;
+mod hardware_identity_mlir;
 pub mod kernel;
 pub(crate) mod mlir;
 pub mod vortex_ir;
 
 pub use attention_mlir::generate_vortex_attention_prefill_mlir;
+pub use hardware_identity_mlir::{
+    VORTEX_HARDWARE_IDENTITY_PROBE_SYMBOL, VORTEX_MANDREL_CONFIG_ID_CSR,
+    generate_vortex_hardware_identity_probe_mlir,
+};
 pub use kernel::{VortexKernelPlanRef, generate_vortex_kernel_mlir};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

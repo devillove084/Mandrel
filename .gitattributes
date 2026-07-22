@@ -1,0 +1,2 @@
+# Unified diff files require prefix characters on otherwise blank context lines.
+hardware/vortex/patches/*.patch -whitespace

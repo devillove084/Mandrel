@@ -65,6 +65,31 @@ fi
 check_file "$VORTEX_BUILD_DIR/sw/runtime/libvortex.so" "Vortex runtime"
 check_file "$VORTEX_BUILD_DIR/sw/runtime/libvortex-rtlsim.so" "RTLSim driver"
 check_file "$VORTEX_BUILD_DIR/sw/runtime/librtlsim.so" "RTLSim core"
+check_file "$MANDREL_VORTEX_CONFIG_MANIFEST" "Vortex config manifest"
+check_file "$MANDREL_VORTEX_CONFIG_SHA256_FILE" "Vortex config SHA-256"
+check_file "$MANDREL_VORTEX_CONFIG_TAG_FILE" "Vortex config tag"
+check_file "$VORTEX_BUILD_DIR/hw/VX_mandrel.vh" "Vortex config Verilog"
+
+if [[ -x $MANDREL_ROOT/.venv/bin/python \
+    && -f $MANDREL_VORTEX_CONFIG_MANIFEST \
+    && -f $MANDREL_VORTEX_CONFIG_SHA256_FILE \
+    && -f $MANDREL_VORTEX_CONFIG_TAG_FILE \
+    && -f $VORTEX_BUILD_DIR/hw/VX_mandrel.vh ]]; then
+    if "$MANDREL_ROOT/.venv/bin/python" \
+        "$MANDREL_ROOT/scripts/env/materialize-vortex-config.py" \
+        --root "$MANDREL_ROOT" \
+        --source-config "$VORTEX_HOME/VX_config.toml" \
+        --generator "$VORTEX_HOME/ci/gen_config.py" \
+        --build-dir "$VORTEX_BUILD_DIR" \
+        --realization-profile "$MANDREL_VORTEX_REALIZATION_PROFILE" \
+        --generator-cflags "$MANDREL_VORTEX_RTLSIM_CONFIGS -DVX_CFG_XLEN=$MANDREL_VORTEX_XLEN" \
+        --check; then
+        printf 'ok   %-28s %s\n' "Vortex config integrity" "tag=$(<"$MANDREL_VORTEX_CONFIG_TAG_FILE")"
+    else
+        printf 'BAD  %-28s %s\n' "Vortex config integrity" "stale or inconsistent generated files"
+        failed=1
+    fi
+fi
 
 if (( failed != 0 )); then
     mandrel_die "environment check failed; run scripts/env/setup.sh all"

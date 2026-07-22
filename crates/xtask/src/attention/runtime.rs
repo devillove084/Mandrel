@@ -4,12 +4,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use mandrel_hardware::HardwareIdentityEvidence;
 use mandrel_target_ir::{TargetContract, TargetSpec};
 use mandrel_vortex_backend::{
     VortexBackend, VortexBackendConfig, VortexConfig, VortexDeviceCaps,
     reference_attention_prefill_i8,
 };
-use mandrel_vortex_codegen::validate_attention_prefill_i8_plan_abi;
+use mandrel_vortex_codegen::{
+    VORTEX_HARDWARE_IDENTITY_PROBE_SYMBOL, validate_attention_prefill_i8_plan_abi,
+};
 
 use crate::command::run_checked_capturing_stdout;
 use crate::vortex::{
@@ -18,7 +21,9 @@ use crate::vortex::{
 };
 use crate::{Result, XtaskError};
 
-use super::artifacts::generate_vortex_attention_artifacts;
+use super::artifacts::{
+    generate_vortex_attention_artifacts, generate_vortex_hardware_identity_probe_artifacts,
+};
 use super::compare::compare_attention_outputs;
 use super::input::{attention_runtime_flag, deterministic_attention_prefill_input};
 use super::metrics::{
@@ -31,10 +36,22 @@ use super::{report, trace};
 pub(crate) fn run_vortex_attention_correctness(workspace_root: &Path) -> Result<()> {
     let config = VortexConfig::from_env(workspace_root)?;
     let spec = current_attention_experiment_spec()?;
+    let identity = config.materialized_config_identity()?;
+    let probe_outputs = generate_vortex_hardware_identity_probe_artifacts(workspace_root, &config)?;
+    require_file(
+        &probe_outputs.vxbin_path,
+        "generated Vortex hardware identity probe vxbin",
+    )?;
     let outputs = generate_vortex_attention_artifacts(workspace_root, spec, false)?;
     require_file(&outputs.vxbin_path, "generated attention vxbin")?;
     require_vortex_runtime_libraries(&config)?;
     let runtime = preferred_vortex_runtime_library(&config)?;
+    let hardware_identity = verify_hardware_identity(
+        &runtime,
+        &probe_outputs.vxbin_path,
+        identity.sha256,
+        identity.tag,
+    )?;
 
     println!(
         "Launching attention runtime correctness through Vortex Verilator RTLSim with vxbin: {}",
@@ -63,10 +80,11 @@ pub(crate) fn run_vortex_attention_correctness(workspace_root: &Path) -> Result<
     let Some(record) = report.record else {
         return Err("attention run did not produce a structured experiment record".into());
     };
-    let result = report::experiment_result_with_outputs(record, &outputs, workspace_root)
-        .ok_or_else(|| {
-            XtaskError::message("attention trace could not form an experiment result")
-        })?;
+    let result =
+        report::experiment_result_with_outputs(record, &outputs, workspace_root, hardware_identity)
+            .ok_or_else(|| {
+                XtaskError::message("attention trace could not form an experiment result")
+            })?;
     let experiment_path = outputs.vxbin_path.with_extension("experiment.json");
     report::write_experiment_json(&result, record, &experiment_path).map_err(|error| {
         XtaskError::message(format!(
@@ -84,6 +102,45 @@ pub(crate) fn run_vortex_attention_correctness(workspace_root: &Path) -> Result<
     println!("attention.experiment json: {}", experiment_path.display());
     println!("attention.experiment csv: {}", csv_path.display());
     Ok(())
+}
+
+fn verify_hardware_identity(
+    runtime_library: &Path,
+    probe_vxbin: &Path,
+    configuration_sha256: String,
+    realized_config_tag: u64,
+) -> Result<HardwareIdentityEvidence> {
+    println!(
+        "Verifying RTL configuration identity through probe kernel: {}",
+        probe_vxbin.display()
+    );
+    let mut backend =
+        VortexBackend::load_from_runtime_candidates(VortexBackendConfig::new(), [runtime_library])
+            .map_err(|error| {
+                format!("failed to initialize Vortex hardware identity probe: {error}")
+            })?;
+    let observed_rtl_config_tag = backend
+        .run_hardware_identity_probe(probe_vxbin, VORTEX_HARDWARE_IDENTITY_PROBE_SYMBOL)
+        .map_err(|error| format!("failed to execute Vortex hardware identity probe: {error}"))?;
+    let evidence = HardwareIdentityEvidence::new(
+        configuration_sha256,
+        realized_config_tag,
+        observed_rtl_config_tag,
+    );
+    println!(
+        "hardware config association: realized_tag=0x{:016x} observed_rtl_tag=0x{:016x} match={}",
+        evidence.realized_config_tag,
+        evidence.observed_rtl_config_tag,
+        evidence.association_tag_matches()
+    );
+    if !evidence.association_tag_matches() {
+        return Err(format!(
+            "Vortex RTL configuration association tag mismatch: realized=0x{:016x}, observed=0x{:016x}; refusing attention performance evidence",
+            evidence.realized_config_tag, evidence.observed_rtl_config_tag
+        )
+        .into());
+    }
+    Ok(evidence)
 }
 
 pub(crate) fn run_vortex_attention_correctness_inner(

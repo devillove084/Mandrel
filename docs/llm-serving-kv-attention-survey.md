@@ -719,7 +719,7 @@ flowchart TD
 | Runtime evidence | Launch, transfer, counter, and correctness records. | `Vec<RuntimeEvent>`. | Add richer hardware/backend events without conflating evidence classes. |
 | Target assumptions | Canonical `TargetSpec`, requirements, and exact target contract. | Requested/realized/observed target model. | Derive realized facts from materialized Vortex configurations. |
 | Memory assumptions | Local memory bytes and transfer summaries. | `MemorySystemSpec`. | Make memory parameters drive legality and reporting. |
-| Experiment contract | `ExperimentSpec`, `ExperimentResult`, JSON v2, and CSV output. | Realized build/artifact provenance and study manifests. | Add digests and failure outcomes; keep comparisons human-authored. |
+| Experiment contract | `ExperimentSpec`, `ExperimentResult`, JSON v3, and CSV output with resolved-config/tag evidence. | Realized build/artifact provenance and study manifests. | Complete build digests and failure outcomes; keep comparisons human-authored. |
 | Correctness | Host-reference compare for dense smoke. | `CorrectnessPolicy` and `CorrectnessResult`. | Generalize exact vs approximate policy. |
 | SLO/goodput | Not present. | `SloPolicy` and serving metrics. | Add fields before serving replay. |
 

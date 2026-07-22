@@ -130,6 +130,7 @@ Target flow:
 ```text
 HardwareDesignSpec
   -> resolved Vortex configuration
+  -> canonical config manifest + generated identity headers
   -> generated VX_config.vh / VX_config.h
   -> Verilator RTLSim / FPGA / synthesis realization
   -> RealizedHardwareManifest
@@ -173,6 +174,8 @@ A realized manifest binds:
 - backend-observed facts;
 - RTL, bitstream, netlist, or synthesis artifacts where applicable.
 
+The current implementation realizes the config-identity subset of this contract. Complete source, patch, generated-upstream-header, command/environment, and tool-version binding remains roadmap work.
+
 ### Realization kinds
 
 | Kind | Purpose | Evidence boundary |
@@ -194,6 +197,24 @@ The existing Vortex tree already provides the first hardware mechanisms Mandrel 
 - generated `build/sw/VX_config.h`
 
 Current tracked defaults include one cluster/core, four warps/core, four threads/warp, 16 KiB local memory, 16 KiB D-cache, TCU disabled, and DXA disabled.
+
+### Runtime configuration identity
+
+`scripts/env/materialize-vortex-config.py` invokes the pinned upstream `gen_config.py` with the fixed Verilator RTLSim profile `-DSIMULATION -DSV_DPI`, parses the complete resolved `-D` define set, and strictly compares the subset named by `hardware/vortex/configs/current-default.toml` and its `[upstream_keys]` mapping. At this stage the tracked file validates the pinned upstream resolution; it does not silently rewrite `external/vortex/VX_config.toml`.
+
+The complete sorted define set plus XLEN is serialized canonically and hashed with SHA-256. Setup atomically writes:
+
+- `external/vortex-build/mandrel/vortex-config.json`;
+- `external/vortex-build/mandrel/vortex-config.sha256`;
+- `external/vortex-build/mandrel/vortex-config.tag`;
+- `external/vortex-build/hw/VX_mandrel.vh`;
+- `external/vortex-build/sw/VX_mandrel.h`.
+
+`VX_mandrel.vh` embeds the first 64 bits of that digest in the RTL build. Patch `0002-rtl-expose-mandrel-config-identity-csr.patch` exposes it through read-only custom CSR `0xFC5`. Before attention runs, Mandrel compiles a small infrastructure kernel from textual LLVM-dialect MLIR, executes `csrr 0xFC5`, and exact-compares the observed value with the materialized tag. A mismatch rejects attention performance evidence.
+
+Before code generation or execution, the Rust backend parses the manifest, confirms the expected RTLSim profile, recomputes the canonical digest, checks both SHA/tag sidecars, and derives compiler/ISA-check defines from that validated manifest instead of rerunning a second resolver.
+
+The full 256-bit digest is the host-side resolved-config identity. The 64-bit CSR value is only a runtime association tag and is not presented as a complete cryptographic proof. The probe uses a separate backend/device instance so its work cannot enter the attention `PERF` counters.
 
 ### Tensor Core Unit
 
@@ -250,9 +271,9 @@ What the backend reports at execution:
 - counters and runtime events;
 - actual execution backend.
 
-Two comparisons are required:
+Three comparisons are required:
 
-1. **Exact identity compatibility** — requested and realized/observed target facts match the claimed design point.
+1. **Exact identity compatibility** — requested and realized/observed target facts match the claimed design point. The current slice validates the full realized-config SHA-256 on the host and separately requires its 64-bit association tag to match CSR `0xFC5`; the tag match is necessary runtime evidence, not a full cryptographic identity proof by itself.
 2. **Kernel requirement compatibility** — the target has enough XLEN, threads, local memory, arithmetic, TCU, DXA, and other operations to execute the kernel legally.
 3. **Binary/RTL ISA compatibility** — final ELF build attributes must not require `M/A/F/D/C/V/Zicond` extensions disabled by the resolved RTL configuration, and must declare `xvortex`, before `.vxbin` packaging.
 
@@ -260,14 +281,14 @@ A larger target can satisfy a kernel without being the exact requested target. M
 
 ## 6. Build identity and provenance model
 
-Mandrel does not use one global artifact registry. Operational build paths and runtime kernel-image lookup belong to the backend that consumes them; experiment reports currently retain only lightweight references to emitted MLIR, LLVM IR, object, ELF, and `.vxbin` files.
+Mandrel does not use one global artifact registry. Operational build paths and runtime kernel-image lookup belong to the backend that consumes them; experiment reports currently retain lightweight references to emitted MLIR, LLVM IR, object, ELF, and `.vxbin` files plus live resolved-config identity evidence.
 
 The target provenance model uses two typed manifests:
 
 - a software-build manifest binding compiler target, toolchain identity, commands, and generated kernel outputs;
 - a hardware-realization manifest binding design input, resolved configuration, source and patch identities, generated headers, build tools, and RTLSim/FPGA/synthesis outputs.
 
-An experiment references those manifest identities and the image actually executed. Transient files such as startup probes remain compiler-build details rather than flat top-level experiment artifacts. Content hashing and live manifest binding are the next schema milestone.
+An experiment references those manifest identities and the image actually executed. Infrastructure artifacts such as the config-identity probe remain compiler-build details rather than operator-catalog entries or flat top-level experiment artifacts. Resolved-config hashing and live identity binding are implemented; complete software-build/hardware-realization manifests remain the next schema milestone.
 
 ## 7. Experiment and report model
 
@@ -302,8 +323,8 @@ ExperimentResult
 Current command output:
 
 - terminal: concise `perf stat`-style summary;
-- JSON: complete `mandrel.experiment.result.v2` record;
-- CSV: one row of stable core fields for manual aggregation.
+- JSON: complete `mandrel.experiment.result.v3` record, including full config SHA-256, realized tag, observed RTL tag, and `association_tag_match` decision;
+- CSV: one row of stable core fields for manual aggregation, including `config_association_tag_match` and the same identity values.
 
 There is intentionally no automatic nearest-history comparison. Study-level baselines and comparisons are human-authored experimental choices.
 

@@ -286,6 +286,9 @@ impl<'a, 'b> MlirBlockEmitter<'a, 'b> {
                     render_mlir_type(int_ty, self.module)
                 ));
             }
+            VortexOp::CsrReadI64 { result, csr } => {
+                self.emit_csr_read_i64(result, u32::from(*csr));
+            }
             VortexOp::CtaCsrI32 {
                 raw64,
                 raw32,
@@ -294,7 +297,7 @@ impl<'a, 'b> MlirBlockEmitter<'a, 'b> {
                 uniform,
             } => self.emit_cta_csr_i32(raw64, raw32.as_deref(), result, *csr, *uniform),
             VortexOp::LocalMemPtr { raw64, result } => {
-                self.emit_csr_read_i64(raw64, VortexCtaCsr::LocalMemAddr);
+                self.emit_csr_read_i64(raw64, VortexCtaCsr::LocalMemAddr.encoded());
                 self.ir.push_line(format!(
                     "    {result} = llvm.inttoptr {raw64} : i64 to !llvm.ptr"
                 ));
@@ -440,7 +443,7 @@ impl<'a, 'b> MlirBlockEmitter<'a, 'b> {
         csr: VortexCtaCsr,
         uniform: bool,
     ) {
-        self.emit_csr_read_i64(raw64, csr);
+        self.emit_csr_read_i64(raw64, csr.encoded());
         if uniform {
             let raw32 = raw32.unwrap_or(result);
             self.ir
@@ -455,8 +458,8 @@ impl<'a, 'b> MlirBlockEmitter<'a, 'b> {
         }
     }
 
-    fn emit_csr_read_i64(&mut self, result: &str, csr: VortexCtaCsr) {
-        let csr = self.ensure_value(&csr.encoded().to_string(), &LlvmType::I32);
+    fn emit_csr_read_i64(&mut self, result: &str, csr: u32) {
+        let csr = self.ensure_value(&csr.to_string(), &LlvmType::I32);
         self.ir.push_line(format!(
             "    {result} = llvm.inline_asm has_side_effects \"csrr $0, $1\", \"=r,i\" {csr} : (i32) -> i64"
         ));

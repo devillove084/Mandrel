@@ -1,9 +1,12 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::string::FromUtf8Error;
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use snafu::Snafu;
 
 pub const DEFAULT_VORTEX_DIR: &str = "external/vortex";
@@ -13,6 +16,9 @@ pub const DEFAULT_VERILATOR_DIR: &str = "external/verilator-install";
 pub const DEFAULT_PYTHON_VENV_DIR: &str = ".venv";
 
 const VORTEX_RV64_MARCH: &str = "rv64imfd_xvortex";
+const VORTEX_CONFIG_MANIFEST_SCHEMA: &str = "mandrel.hardware.vortex-config-manifest.v2";
+const VORTEX_RTLSIM_REALIZATION_PROFILE: &str = "verilator_rtlsim";
+const VORTEX_RTLSIM_PROFILE_DEFINES: [&str; 2] = ["-DSIMULATION", "-DSV_DPI"];
 // The probe is inspected but never executed. Keep address-zero weak libc symbols within medany range.
 const VORTEX_RV64_STARTUP_PROBE_ADDR: &str = "0x40000000";
 const VORTEX_RV64_STARTUP_ADDR: &str = "0x180000000";
@@ -48,6 +54,8 @@ pub enum VortexToolchainError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[snafu(display("invalid materialized Vortex config identity '{}': {message}", path.display()))]
+    InvalidConfigIdentity { path: PathBuf, message: String },
     #[snafu(display("failed to build {key} for Vortex command environment: {source}"))]
     JoinEnvPaths {
         key: String,
@@ -134,6 +142,48 @@ impl From<&str> for VortexToolchainError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedVortexConfigIdentity {
+    pub sha256: String,
+    pub tag: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MaterializedVortexConfigManifest {
+    schema: String,
+    xlen: u32,
+    resolution: VortexConfigResolution,
+    resolved_sha256: String,
+    config_tag: String,
+    defines: BTreeMap<String, VortexConfigDefineValue>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct VortexConfigResolution {
+    profile: String,
+    generator_cflags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+enum VortexConfigDefineValue {
+    Boolean(bool),
+    Number(serde_json::Number),
+    String(String),
+}
+
+#[derive(Serialize)]
+struct CanonicalResolvedVortexConfig<'a> {
+    defines: &'a BTreeMap<String, VortexConfigDefineValue>,
+    xlen: u32,
+}
+
+#[derive(Debug)]
+struct MaterializedVortexConfig {
+    identity: MaterializedVortexConfigIdentity,
+    cflags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VortexConfig {
     pub source_dir: PathBuf,
     pub build_dir: PathBuf,
@@ -205,6 +255,232 @@ impl VortexConfig {
     pub fn python_binary(&self) -> PathBuf {
         self.python_venv_dir.join("bin/python")
     }
+
+    pub fn mandrel_config_manifest_path(&self) -> PathBuf {
+        self.build_dir.join("mandrel/vortex-config.json")
+    }
+
+    pub fn mandrel_config_sha256_path(&self) -> PathBuf {
+        self.build_dir.join("mandrel/vortex-config.sha256")
+    }
+
+    pub fn mandrel_config_tag_path(&self) -> PathBuf {
+        self.build_dir.join("mandrel/vortex-config.tag")
+    }
+
+    pub fn materialized_config_identity(
+        &self,
+    ) -> VortexToolchainResult<MaterializedVortexConfigIdentity> {
+        Ok(self.materialized_config()?.identity)
+    }
+
+    fn materialized_config_cflags(&self) -> VortexToolchainResult<Vec<String>> {
+        Ok(self.materialized_config()?.cflags)
+    }
+
+    fn materialized_config(&self) -> VortexToolchainResult<MaterializedVortexConfig> {
+        let manifest_path = self.mandrel_config_manifest_path();
+        let sha256_path = self.mandrel_config_sha256_path();
+        let tag_path = self.mandrel_config_tag_path();
+        require_file(
+            &manifest_path,
+            "Mandrel Vortex config manifest; run scripts/env/setup.sh vortex",
+        )?;
+        let manifest_json = read_trimmed_file(&manifest_path)?;
+        let sha256 = read_trimmed_file(&sha256_path)?;
+        let tag = read_trimmed_file(&tag_path)?;
+        parse_materialized_config(
+            &manifest_path,
+            &manifest_json,
+            &sha256_path,
+            &sha256,
+            &tag_path,
+            &tag,
+            self.xlen,
+        )
+    }
+}
+
+fn read_trimmed_file(path: &Path) -> VortexToolchainResult<String> {
+    fs::read_to_string(path)
+        .map(|contents| contents.trim().to_owned())
+        .map_err(|source| VortexToolchainError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn parse_materialized_config(
+    manifest_path: &Path,
+    manifest_json: &str,
+    sha256_path: &Path,
+    sha256: &str,
+    tag_path: &Path,
+    tag: &str,
+    expected_xlen: u32,
+) -> VortexToolchainResult<MaterializedVortexConfig> {
+    let manifest: MaterializedVortexConfigManifest =
+        serde_json::from_str(manifest_json).map_err(|error| {
+            VortexToolchainError::InvalidConfigIdentity {
+                path: manifest_path.to_path_buf(),
+                message: format!("cannot parse config manifest JSON: {error}"),
+            }
+        })?;
+    if manifest.schema != VORTEX_CONFIG_MANIFEST_SCHEMA {
+        return Err(VortexToolchainError::InvalidConfigIdentity {
+            path: manifest_path.to_path_buf(),
+            message: format!(
+                "expected schema {VORTEX_CONFIG_MANIFEST_SCHEMA}, got {}",
+                manifest.schema
+            ),
+        });
+    }
+    if manifest.xlen != expected_xlen {
+        return Err(VortexToolchainError::InvalidConfigIdentity {
+            path: manifest_path.to_path_buf(),
+            message: format!(
+                "manifest XLEN {} does not match configured XLEN {expected_xlen}",
+                manifest.xlen
+            ),
+        });
+    }
+    let expected_resolution = VortexConfigResolution {
+        profile: VORTEX_RTLSIM_REALIZATION_PROFILE.to_owned(),
+        generator_cflags: VORTEX_RTLSIM_PROFILE_DEFINES
+            .iter()
+            .map(|flag| (*flag).to_owned())
+            .chain([format!("-DVX_CFG_XLEN={expected_xlen}")])
+            .collect(),
+    };
+    if manifest.resolution != expected_resolution {
+        return Err(VortexToolchainError::InvalidConfigIdentity {
+            path: manifest_path.to_path_buf(),
+            message: format!(
+                "expected RTLSim resolution {:?}, got {:?}",
+                expected_resolution, manifest.resolution
+            ),
+        });
+    }
+
+    let canonical = serde_json::to_vec(&CanonicalResolvedVortexConfig {
+        defines: &manifest.defines,
+        xlen: manifest.xlen,
+    })
+    .map_err(|error| VortexToolchainError::InvalidConfigIdentity {
+        path: manifest_path.to_path_buf(),
+        message: format!("cannot canonicalize resolved config: {error}"),
+    })?;
+    let computed_sha256 = format!("{:x}", Sha256::digest(canonical));
+    if manifest.resolved_sha256 != computed_sha256 {
+        return Err(VortexToolchainError::InvalidConfigIdentity {
+            path: manifest_path.to_path_buf(),
+            message: format!(
+                "manifest resolved SHA-256 {} does not match recomputed {computed_sha256}",
+                manifest.resolved_sha256
+            ),
+        });
+    }
+    if sha256 != manifest.resolved_sha256 {
+        return Err(VortexToolchainError::InvalidConfigIdentity {
+            path: sha256_path.to_path_buf(),
+            message: "SHA-256 sidecar does not match config manifest".to_owned(),
+        });
+    }
+    if tag != manifest.config_tag {
+        return Err(VortexToolchainError::InvalidConfigIdentity {
+            path: tag_path.to_path_buf(),
+            message: "tag sidecar does not match config manifest".to_owned(),
+        });
+    }
+    let identity = parse_materialized_config_identity(
+        manifest_path,
+        &manifest.resolved_sha256,
+        manifest_path,
+        &manifest.config_tag,
+    )?;
+    let cflags = manifest
+        .defines
+        .iter()
+        .map(|(name, value)| render_config_define(manifest_path, name, value))
+        .collect::<VortexToolchainResult<Vec<_>>>()?;
+
+    Ok(MaterializedVortexConfig { identity, cflags })
+}
+
+fn render_config_define(
+    manifest_path: &Path,
+    name: &str,
+    value: &VortexConfigDefineValue,
+) -> VortexToolchainResult<String> {
+    let mut bytes = name.bytes();
+    let valid_start = bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_');
+    if !valid_start || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
+        return Err(VortexToolchainError::InvalidConfigIdentity {
+            path: manifest_path.to_path_buf(),
+            message: format!("invalid resolved define name {name:?}"),
+        });
+    }
+    let rendered = match value {
+        VortexConfigDefineValue::Boolean(true) => format!("-D{name}"),
+        VortexConfigDefineValue::Boolean(false) => format!("-D{name}=false"),
+        VortexConfigDefineValue::Number(number) if number.is_i64() || number.is_u64() => {
+            format!("-D{name}={number}")
+        }
+        VortexConfigDefineValue::Number(number) => {
+            return Err(VortexToolchainError::InvalidConfigIdentity {
+                path: manifest_path.to_path_buf(),
+                message: format!("resolved define {name} has non-integer number {number}"),
+            });
+        }
+        VortexConfigDefineValue::String(value) => format!("-D{name}={value}"),
+    };
+    Ok(rendered)
+}
+
+fn parse_materialized_config_identity(
+    sha256_path: &Path,
+    sha256: &str,
+    tag_path: &Path,
+    tag: &str,
+) -> VortexToolchainResult<MaterializedVortexConfigIdentity> {
+    if sha256.len() != 64
+        || !sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(VortexToolchainError::InvalidConfigIdentity {
+            path: sha256_path.to_path_buf(),
+            message: "expected 64 lowercase hexadecimal SHA-256 characters".to_owned(),
+        });
+    }
+    if tag.len() != 16
+        || !tag
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(VortexToolchainError::InvalidConfigIdentity {
+            path: tag_path.to_path_buf(),
+            message: "expected 16 lowercase hexadecimal tag characters".to_owned(),
+        });
+    }
+    if !sha256.starts_with(tag) {
+        return Err(VortexToolchainError::InvalidConfigIdentity {
+            path: tag_path.to_path_buf(),
+            message: "tag is not the leading 64 bits of the resolved config SHA-256".to_owned(),
+        });
+    }
+    let tag = u64::from_str_radix(tag, 16).map_err(|error| {
+        VortexToolchainError::InvalidConfigIdentity {
+            path: tag_path.to_path_buf(),
+            message: format!("cannot parse hexadecimal tag: {error}"),
+        }
+    })?;
+    Ok(MaterializedVortexConfigIdentity {
+        sha256: sha256.to_owned(),
+        tag,
+    })
 }
 
 pub trait VortexCommandRunner {
@@ -476,7 +752,7 @@ where
     require_file(&readelf, "Vortex llvm-readelf")?;
     require_file(elf_path, "generated Vortex ELF")?;
 
-    let config_flags = vortex_config_cflags(workspace_root, config, phase_prefix, runner)?;
+    let config_flags = config.materialized_config_cflags()?;
     let rtl_isa = VortexRtlIsa::from_config_flags(config.xlen, &config_flags)?;
 
     let mut readelf_cmd = Command::new(&readelf);
@@ -889,37 +1165,6 @@ where
         .collect::<Vec<_>>())
 }
 
-fn vortex_config_cflags<R>(
-    workspace_root: &Path,
-    config: &VortexConfig,
-    phase_prefix: &str,
-    runner: &mut R,
-) -> VortexToolchainResult<Vec<String>>
-where
-    R: VortexCommandRunner,
-{
-    let gen_config = config.source_dir.join("ci/gen_config.py");
-    let vx_config = config.source_dir.join("VX_config.toml");
-    require_file(&gen_config, "Vortex config flag generator")?;
-    require_file(&vx_config, "Vortex config TOML")?;
-
-    let mut command = Command::new(config.python_binary());
-    command
-        .current_dir(workspace_root)
-        .arg(&gen_config)
-        .arg(format!("--config={}", vx_config.display()))
-        .arg("--cflags=-DVX_CFG_XLEN=64");
-    apply_vortex_command_env(&mut command, config)?;
-    let phase = prefixed_phase(phase_prefix, "vortex_config_cflags");
-    let output = runner.output(&phase, command)?;
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|source| VortexToolchainError::NonUtf8Output { phase, source })?;
-    Ok(stdout
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect::<Vec<_>>())
-}
-
 fn compile_vortex_startup_object<R>(
     workspace_root: &Path,
     config: &VortexConfig,
@@ -940,7 +1185,7 @@ where
     let kernel_include = config.source_dir.join("sw/kernel/include");
     let kernel_src = config.source_dir.join("sw/kernel/src");
     let generated_sw = config.build_dir.join("sw");
-    let config_flags = vortex_config_cflags(workspace_root, config, phase_prefix, runner)?;
+    let config_flags = config.materialized_config_cflags()?;
 
     require_file(
         &generated_sw.join("VX_types.h"),
@@ -1061,8 +1306,9 @@ fn project_path_from_env(workspace_root: &Path, env_name: &str, default: &str) -
 #[cfg(test)]
 mod tests {
     use super::{
-        RiscvIsaExtensions, VortexConfig, VortexKernelBuildOutputs, VortexToolchainError,
-        parse_riscv_elf_arch_attribute,
+        MaterializedVortexConfigIdentity, RiscvIsaExtensions, VortexConfig,
+        VortexKernelBuildOutputs, VortexToolchainError, parse_materialized_config,
+        parse_materialized_config_identity, parse_riscv_elf_arch_attribute,
     };
     use std::path::Path;
 
@@ -1082,6 +1328,92 @@ mod tests {
             root.join("external/verilator-install")
         );
         assert_eq!(config.python_binary(), root.join(".venv/bin/python"));
+    }
+
+    #[test]
+    fn parses_materialized_vortex_config_identity() {
+        let sha = "1d971b9b230fa24aa514c0a6855be71a64d6f726f96532c3e26e888c019f5d9b";
+        let identity = match parse_materialized_config_identity(
+            Path::new("vortex-config.sha256"),
+            sha,
+            Path::new("vortex-config.tag"),
+            "1d971b9b230fa24a",
+        ) {
+            Ok(identity) => identity,
+            Err(error) => panic!("unexpected identity parse error: {error}"),
+        };
+
+        assert_eq!(
+            identity,
+            MaterializedVortexConfigIdentity {
+                sha256: sha.to_owned(),
+                tag: 0x1d97_1b9b_230f_a24a,
+            }
+        );
+    }
+
+    #[test]
+    fn validates_manifest_digest_profile_sidecars_and_resolved_cflags() {
+        let sha = "07f1562729fc678b42ae58e8cd4f7f493b21260e33044a838e0b73f5e3f97a9b";
+        let manifest = format!(
+            "{{\"schema\":\"mandrel.hardware.vortex-config-manifest.v2\",\"xlen\":64,\"resolution\":{{\"profile\":\"verilator_rtlsim\",\"generator_cflags\":[\"-DSIMULATION\",\"-DSV_DPI\",\"-DVX_CFG_XLEN=64\"]}},\"resolved_sha256\":\"{sha}\",\"config_tag\":\"07f1562729fc678b\",\"defines\":{{\"VX_CFG_XLEN\":64,\"VX_CFG_EXT_M_ENABLED\":1}}}}"
+        );
+        let config = match parse_materialized_config(
+            Path::new("vortex-config.json"),
+            &manifest,
+            Path::new("vortex-config.sha256"),
+            sha,
+            Path::new("vortex-config.tag"),
+            "07f1562729fc678b",
+            64,
+        ) {
+            Ok(config) => config,
+            Err(error) => panic!("unexpected materialized config error: {error}"),
+        };
+
+        assert_eq!(config.identity.sha256, sha);
+        assert_eq!(config.identity.tag, 0x07f1_5627_29fc_678b);
+        assert_eq!(
+            config.cflags,
+            ["-DVX_CFG_EXT_M_ENABLED=1", "-DVX_CFG_XLEN=64"]
+        );
+    }
+
+    #[test]
+    fn rejects_manifest_sidecar_drift() {
+        let sha = "07f1562729fc678b42ae58e8cd4f7f493b21260e33044a838e0b73f5e3f97a9b";
+        let manifest = format!(
+            "{{\"schema\":\"mandrel.hardware.vortex-config-manifest.v2\",\"xlen\":64,\"resolution\":{{\"profile\":\"verilator_rtlsim\",\"generator_cflags\":[\"-DSIMULATION\",\"-DSV_DPI\",\"-DVX_CFG_XLEN=64\"]}},\"resolved_sha256\":\"{sha}\",\"config_tag\":\"07f1562729fc678b\",\"defines\":{{\"VX_CFG_XLEN\":64,\"VX_CFG_EXT_M_ENABLED\":1}}}}"
+        );
+        let error = parse_materialized_config(
+            Path::new("vortex-config.json"),
+            &manifest,
+            Path::new("vortex-config.sha256"),
+            "17f1562729fc678b42ae58e8cd4f7f493b21260e33044a838e0b73f5e3f97a9b",
+            Path::new("vortex-config.tag"),
+            "07f1562729fc678b",
+            64,
+        );
+
+        assert!(matches!(
+            error,
+            Err(VortexToolchainError::InvalidConfigIdentity { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_materialized_config_tag_that_does_not_match_sha() {
+        let error = parse_materialized_config_identity(
+            Path::new("vortex-config.sha256"),
+            "1d971b9b230fa24aa514c0a6855be71a64d6f726f96532c3e26e888c019f5d9b",
+            Path::new("vortex-config.tag"),
+            "2d971b9b230fa24a",
+        );
+
+        assert!(matches!(
+            error,
+            Err(VortexToolchainError::InvalidConfigIdentity { .. })
+        ));
     }
 
     #[test]

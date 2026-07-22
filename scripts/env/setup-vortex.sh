@@ -32,20 +32,34 @@ mandrel_note "configuring pinned Vortex source"
         "--prefix=$VORTEX_PATH"
 )
 
+mandrel_note "materializing resolved Vortex configuration"
+mandrel_run "$MANDREL_PYTHON_VENV_DIR/bin/python" \
+    "$MANDREL_ROOT/scripts/env/materialize-vortex-config.py" \
+    --root "$MANDREL_ROOT" \
+    --source-config "$VORTEX_HOME/VX_config.toml" \
+    --generator "$VORTEX_HOME/ci/gen_config.py" \
+    --build-dir "$VORTEX_BUILD_DIR" \
+    --realization-profile "$MANDREL_VORTEX_REALIZATION_PROFILE" \
+    --generator-cflags "$MANDREL_VORTEX_RTLSIM_CONFIGS -DVX_CFG_XLEN=$MANDREL_VORTEX_XLEN"
+
 export PATH="$MANDREL_ROOT/.venv/bin:$VERILATOR_PATH/bin:/usr/bin:/bin:$VORTEX_TOOL_DIR/llvm-vortex/bin:$VORTEX_TOOL_DIR/riscv64-gnu-toolchain/bin"
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 
 toolchain_stamp="$VORTEX_BUILD_DIR/sw/runtime/mandrel-rtlsim-toolchain.stamp"
 toolchain_stamp_tmp="$toolchain_stamp.tmp"
+config_tag=$(<"$MANDREL_VORTEX_CONFIG_TAG_FILE")
 {
+    printf 'vortex_config_tag=%s\n' "$config_tag"
+    printf 'vortex_realization_profile=%s\n' "$MANDREL_VORTEX_REALIZATION_PROFILE"
+    printf 'vortex_rtlsim_configs=%s\n' "$MANDREL_VORTEX_RTLSIM_CONFIGS"
     printf 'verilator_path=%s\n' "$VERILATOR_PATH"
     "$VERILATOR_PATH/bin/verilator" --version
     "$MANDREL_ROOT/.venv/bin/python" --version
     /usr/bin/g++ --version | sed -n '1p'
 } >"$toolchain_stamp_tmp"
 if ! cmp -s "$toolchain_stamp_tmp" "$toolchain_stamp"; then
-    mandrel_note "RTLSim toolchain identity changed; rebuilding RTLSim objects"
+    mandrel_note "RTLSim configuration or toolchain identity changed; rebuilding RTLSim objects"
     mandrel_run make -C "$VORTEX_BUILD_DIR/sw/runtime/rtlsim" \
         "DESTDIR=$VORTEX_BUILD_DIR/sw/runtime" clean
     mv "$toolchain_stamp_tmp" "$toolchain_stamp"
@@ -58,7 +72,9 @@ mandrel_run make -C "$VORTEX_HOME/third_party" softfloat ramulator
 mandrel_run make -C "$VORTEX_BUILD_DIR/sw/kernel"
 mandrel_run make -C "$VORTEX_BUILD_DIR/sw/runtime/stub"
 mandrel_run make -C "$VORTEX_BUILD_DIR/sw/runtime/rtlsim" \
-    "DESTDIR=$VORTEX_BUILD_DIR/sw/runtime" PERF=1 "THREADS=$jobs"
+    "DESTDIR=$VORTEX_BUILD_DIR/sw/runtime" \
+    "CONFIGS=$MANDREL_VORTEX_RTLSIM_CONFIGS" \
+    PERF=1 "THREADS=$jobs"
 
 mandrel_require_file "$VORTEX_BUILD_DIR/sw/runtime/libvortex.so" "Vortex runtime stub"
 mandrel_require_file "$VORTEX_BUILD_DIR/sw/runtime/libvortex-rtlsim.so" "Vortex RTLSim driver"

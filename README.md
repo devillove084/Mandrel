@@ -20,12 +20,13 @@ Mandrel currently has one end-to-end executable baseline:
 - memory: direct global-memory access and `0 B` local memory per workgroup;
 - code path: Rust plan → textual LLVM-dialect MLIR → LLVM IR → RV64 object → startup-aware ELF → `.vxbin`;
 - compatibility gate: final ELF XLEN and ISA attributes must be a subset of the materialized RTL `VX_CFG_EXT_*` capabilities before `.vxbin` packaging;
-- execution: Vortex SystemVerilog RTL through the pinned project-local Verilator RTLSim and Vortex runtime;
-- validation: exact comparison against a Rust host reference;
-- evidence: launch/transfer events and RTL `PERF` instructions, cycles, and IPC;
+- hardware identity: the tracked design subset is checked against every define resolved for the fixed Verilator RTLSim profile (`-DSIMULATION -DSV_DPI`), whose canonical SHA-256 is materialized into a manifest and a 64-bit RTL association tag;
+- execution: an infrastructure MLIR probe reads that tag from read-only Vortex CSR `0xFC5` before attention runs through the pinned project-local Verilator RTLSim and Vortex runtime;
+- validation: Rust recomputes the manifest digest, verifies both sidecars and the RTLSim profile, rejects a realized/observed association-tag mismatch before accepting performance evidence, then exact-compares attention against a Rust host reference;
+- evidence: hardware identity, launch/transfer events, and RTL `PERF` instructions, cycles, and IPC;
 - outputs: a versioned JSON result and a one-row CSV summary, both labeled with `rtl_simulation` evidence.
 
-This baseline proves that the executable spine and correctness contract pass through Vortex RTL end to end. It is not yet serving-faithful prefill/decode, paged attention, a structural key-tiled online-softmax kernel, an FPGA measurement, or a PPA result. Verilator RTLSim cycles are RTL-simulation observations, not FPGA or chip performance.
+This baseline proves that the executable spine, runtime hardware-identity gate, and correctness contract pass through Vortex RTL end to end. The full SHA-256 remains the host-side resolved-configuration identity; the CSR exposes only its first 64 bits as a runtime association tag, not as a complete cryptographic proof. The baseline is not yet serving-faithful prefill/decode, paged attention, a structural key-tiled online-softmax kernel, an FPGA measurement, or a PPA result. Verilator RTLSim cycles are RTL-simulation observations, not FPGA or chip performance.
 
 ## The focused research question
 
@@ -92,7 +93,7 @@ target/mandrel/vortex/attention_prefill_i8.experiment.json
 target/mandrel/vortex/attention_prefill_i8.experiment.csv
 ```
 
-The JSON result is the complete machine-readable record. The CSV contains one row of core fields for scripts, notebooks, and manually curated comparisons. Mandrel does not automatically choose a historical baseline or infer the next optimization.
+The JSON result is the complete machine-readable record. Its `hardware_identity` object records the full resolved-configuration SHA-256, realized 64-bit tag, RTL-observed tag, and `association_tag_match` decision. The CSV exposes the same core identity fields alongside correctness and profiling values for scripts, notebooks, and manually curated comparisons. Mandrel does not automatically choose a historical baseline or infer the next optimization.
 
 Evidence sources remain distinct:
 
@@ -114,7 +115,7 @@ make install
 make run
 ```
 
-`make install` materializes the complete pinned project-local environment. `make run` regenerates the operator artifacts, checks plan/ABI and ELF/RTL ISA compatibility, launches Vortex SystemVerilog through Verilator RTLSim, exact-compares the output, prints RTL `PERF` counters, and writes JSON/CSV with `rtl_simulation` evidence.
+`make install` materializes the complete pinned project-local environment, validates the tracked Vortex design subset, generates the canonical RTLSim-profile manifest/tag and RTL header, and builds RTLSim with the same fixed profile. `make run` recomputes and validates that manifest, regenerates the identity-probe and operator artifacts, checks plan/ABI and ELF/RTL ISA compatibility, requires the RTL-observed config tag to match, launches attention through Vortex SystemVerilog, exact-compares the output, prints RTL `PERF` counters, and writes JSON/CSV with `rtl_simulation` evidence. The probe uses a separate backend/device instance, so its instructions and cycles do not contaminate the attention counters.
 
 Run setup and the RTL integration gate in one command:
 
@@ -130,11 +131,11 @@ Common targets:
 | `make setup-python` | Create the frozen uv-managed Python environment. |
 | `make setup-verilator` | Build the pinned project-local Verilator. |
 | `make setup-llvm` | Build or verify LLVM-Vortex and compiler-rt. |
-| `make setup-vortex` | Fetch, patch, and build the Vortex RTLSim runtime. |
-| `make env-check` | Verify all materialized revisions, tools, libraries, and the non-RVC libc multilib. |
+| `make setup-vortex` | Fetch and patch Vortex, materialize its resolved config identity, and build the matching RTLSim runtime. |
+| `make env-check` | Verify revisions, tools, libraries, non-RVC libc, and generated Vortex config identity integrity. |
 | `make plan` | Print the typed attention launch plan. |
 | `make generate` | Generate and validate MLIR, LLVM IR, object, ELF, and `.vxbin` artifacts. |
-| `make run` / `make profile` | Run exact RTLSim correctness and emit terminal, JSON, and CSV profiles. |
+| `make run` / `make profile` | Gate RTL config identity, run exact RTLSim correctness, and emit terminal, JSON, and CSV profiles. |
 | `make validate` | Run formatting, workspace check, Clippy, tests, and the RISC-V `no_std` check. |
 | `make verify` | Run the environment check, full Rust validation, and the RTL integration gate. |
 

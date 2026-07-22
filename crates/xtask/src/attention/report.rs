@@ -5,7 +5,9 @@ use std::path::Path;
 use mandrel_experiment::{
     ExperimentResult, ExperimentStatus, RuntimeEvent, SoftwareOutputKind, SoftwareOutputRef,
 };
-use mandrel_hardware::{CURRENT_LLVM_VORTEX_REVISION, CURRENT_VORTEX_REVISION};
+use mandrel_hardware::{
+    CURRENT_LLVM_VORTEX_REVISION, CURRENT_VORTEX_REVISION, HardwareIdentityEvidence,
+};
 use mandrel_target_ir::{TargetCapability, TargetContract};
 use mandrel_vortex_backend::VortexKernelBuildOutputs;
 
@@ -15,8 +17,10 @@ pub(crate) fn experiment_result_with_outputs(
     record: AttentionRuntimeTraceRecord,
     outputs: &VortexKernelBuildOutputs,
     workspace_root: &Path,
+    hardware_identity: HardwareIdentityEvidence,
 ) -> Option<ExperimentResult> {
     let mut result = attention_experiment_result_from_record(record)?;
+    result.hardware_identity = Some(hardware_identity);
     result.software_outputs = vec![
         software_output(SoftwareOutputKind::Mlir, &outputs.mlir_path, workspace_root),
         software_output(SoftwareOutputKind::LlvmIr, &outputs.ll_path, workspace_root),
@@ -73,7 +77,7 @@ fn render_experiment_json(
 ) -> String {
     let mut json = String::new();
     json.push('{');
-    json_string_field(&mut json, "schema", "mandrel.experiment.result.v2");
+    json_string_field(&mut json, "schema", "mandrel.experiment.result.v3");
     json.push(',');
     json_string_field(&mut json, "spec_id", result.spec_id);
     json.push(',');
@@ -116,6 +120,32 @@ fn render_experiment_json(
         json.push_str(",\"async_copy\":");
         json.push_str(bool_as_str(hardware.async_copy));
         json.push('}');
+    }
+
+    json.push_str(",\"hardware_identity\":");
+    match &result.hardware_identity {
+        Some(identity) => {
+            json.push('{');
+            json_string_field(
+                &mut json,
+                "configuration_sha256",
+                &identity.configuration_sha256,
+            );
+            json.push_str(",\"realized_config_tag\":");
+            json_string(
+                &mut json,
+                &format!("0x{:016x}", identity.realized_config_tag),
+            );
+            json.push_str(",\"observed_rtl_config_tag\":");
+            json_string(
+                &mut json,
+                &format!("0x{:016x}", identity.observed_rtl_config_tag),
+            );
+            json.push_str(",\"association_tag_match\":");
+            json.push_str(bool_as_str(identity.association_tag_matches()));
+            json.push('}');
+        }
+        None => json.push_str("null"),
     }
 
     json.push_str(",\"software_design\":{");
@@ -252,7 +282,7 @@ fn render_target_json(json: &mut String, target: mandrel_target_ir::TargetSpec) 
 }
 
 fn render_experiment_csv(result: &ExperimentResult, record: AttentionRuntimeTraceRecord) -> String {
-    let header = "schema,spec_id,status,evidence_class,workload,sequence,head_dim,hardware_design,vortex_revision,llvm_vortex_revision,kernel,lowering,requested_backend,observed_backend,target_exact,correctness_passed,correctness_mismatches,instructions,cycles,ipc,total_transfer_bytes,logical_macs,lowered_macs,wall_time_ms";
+    let header = "schema,spec_id,status,evidence_class,workload,sequence,head_dim,hardware_design,vortex_revision,llvm_vortex_revision,configuration_sha256,realized_config_tag,observed_rtl_config_tag,config_association_tag_match,kernel,lowering,requested_backend,observed_backend,target_exact,correctness_passed,correctness_mismatches,instructions,cycles,ipc,total_transfer_bytes,logical_macs,lowered_macs,wall_time_ms";
     let spec = record.experiment_spec;
     let workload = spec.map(|spec| spec.workload.name).unwrap_or("");
     let sequence = spec
@@ -270,6 +300,26 @@ fn render_experiment_csv(result: &ExperimentResult, record: AttentionRuntimeTrac
         .correctness
         .map(|correctness| correctness.mismatches.to_string())
         .unwrap_or_default();
+    let configuration_sha256 = result
+        .hardware_identity
+        .as_ref()
+        .map(|identity| identity.configuration_sha256.clone())
+        .unwrap_or_default();
+    let realized_config_tag = result
+        .hardware_identity
+        .as_ref()
+        .map(|identity| format!("0x{:016x}", identity.realized_config_tag))
+        .unwrap_or_default();
+    let observed_rtl_config_tag = result
+        .hardware_identity
+        .as_ref()
+        .map(|identity| format!("0x{:016x}", identity.observed_rtl_config_tag))
+        .unwrap_or_default();
+    let config_association_tag_match = result
+        .hardware_identity
+        .as_ref()
+        .map(|identity| identity.association_tag_matches().to_string())
+        .unwrap_or_default();
     let instructions = optional_u64_csv(result.counters.kernel.instructions);
     let cycles = optional_u64_csv(result.counters.kernel.cycles);
     let ipc = match (
@@ -282,7 +332,7 @@ fn render_experiment_csv(result: &ExperimentResult, record: AttentionRuntimeTrac
         _ => String::new(),
     };
     let fields = [
-        "mandrel.experiment.result.v2".to_owned(),
+        "mandrel.experiment.result.v3".to_owned(),
         result.spec_id.to_owned(),
         experiment_status_as_str(result.status).to_owned(),
         "rtl_simulation".to_owned(),
@@ -292,6 +342,10 @@ fn render_experiment_csv(result: &ExperimentResult, record: AttentionRuntimeTrac
         hardware_design.to_owned(),
         CURRENT_VORTEX_REVISION.to_owned(),
         CURRENT_LLVM_VORTEX_REVISION.to_owned(),
+        configuration_sha256,
+        realized_config_tag,
+        observed_rtl_config_tag,
+        config_association_tag_match,
         record.summary.launch.kernel_symbol.to_owned(),
         "dense_scalar_two_pass_4x1x64".to_owned(),
         result.target.requested.backend_name().to_owned(),
@@ -402,6 +456,7 @@ mod tests {
         AttentionRuntimeTraceEnrichment, collect_attention_runtime_trace_with_enrichment,
     };
     use mandrel_experiment::ExperimentSpec;
+    use mandrel_hardware::HardwareIdentityEvidence;
 
     const TRACE: &str = "PERF: instrs=165144, cycles=414598, IPC=0.398\nattention.runtime: compare summary elements=128 mismatches=0 status=exact\nMANDREL_RUNTIME_TRACE: kernel=attention_prefill_i8 runtime_sequence=8 runtime_head_dim=16 query_tile=4 key_tile=1 compiled_sequence=64 compiled_head_dim=64 head_dim_tile=64 logical_macs=2048 lowered_macs=33792 estimated_global_bytes_read=66560 estimated_global_bytes_written=128 estimated_local_memory_bytes_per_workgroup=0 requested_target_backend=vortex_rtl requested_target_xlen=64 requested_target_max_workgroup_threads=16 requested_target_preferred_subgroup_width=4 requested_target_local_memory_bytes=16384 requested_target_supports_int8=true requested_target_supports_float32=true requested_target_supports_tensor_cores=false requested_target_supports_async_copy=false observed_target_backend=vortex_rtl observed_target_xlen=64 observed_target_preferred_subgroup_width=4 observed_target_supports_int8=true observed_target_supports_float32=true observed_target_supports_tensor_cores=false observed_target_supports_async_copy=false target_compatible=true target_mismatch_mask=0 target_threads_per_warp=4 target_warps_per_core=4 target_max_workgroup_threads=16 target_local_memory_bytes=16384 workgroup_count=16 threads_per_workgroup=16 total_threads=256 runtime_q_elements=128 runtime_kv_elements=256 runtime_output_elements=128 runtime_q_bytes=128 runtime_kv_bytes=256 runtime_output_bytes=128 module_cache_hit=false kernel_cache_hit=false grid=16x1x1 block=4x4x1 shared_memory_bytes=0 host_to_device_bytes=384 device_to_host_bytes=128\n";
 
@@ -416,19 +471,29 @@ mod tests {
             Some(record) => record,
             None => panic!("expected structured trace"),
         };
-        let result = match super::attention_experiment_result_from_record(record) {
+        let mut result = match super::attention_experiment_result_from_record(record) {
             Some(result) => result,
             None => panic!("expected experiment result"),
         };
+        result.hardware_identity = Some(HardwareIdentityEvidence::new(
+            "1d971b9b230fa24aa514c0a6855be71a64d6f726f96532c3e26e888c019f5d9b",
+            0x1d97_1b9b_230f_a24a,
+            0x1d97_1b9b_230f_a24a,
+        ));
 
         let json = render_experiment_json(&result, record);
         let csv = render_experiment_csv(&result, record);
 
-        assert!(json.contains("\"schema\":\"mandrel.experiment.result.v2\""));
+        assert!(json.contains("\"schema\":\"mandrel.experiment.result.v3\""));
         assert!(json.contains("\"evidence_class\":\"rtl_simulation\""));
+        assert!(json.contains("\"realized_config_tag\":\"0x1d971b9b230fa24a\""));
+        assert!(json.contains("\"observed_rtl_config_tag\":\"0x1d971b9b230fa24a\""));
+        assert!(json.contains("\"association_tag_match\":true"));
         assert!(!json.contains("baseline"));
         assert!(csv.starts_with("schema,spec_id,status,evidence_class"));
         assert!(csv.contains("rtl_simulation"));
+        assert!(csv.contains("configuration_sha256,realized_config_tag,observed_rtl_config_tag,config_association_tag_match"));
+        assert!(csv.contains("0x1d971b9b230fa24a"));
         assert!(!csv.contains("baseline"));
     }
 }
