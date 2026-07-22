@@ -38,7 +38,7 @@ fn print_overview() {
         "mandrel workspace\n\n\
          focused goal:\n\
            - Rust-first RISC-V GPGPU stack co-design\n\
-           - primary executable backend target: Vortex simx/RTL path\n\
+           - primary executable backend target: Vortex RTL path\n\
            - MLIR-first generated device code\n\
            - near-term operators: attention prefill, online softmax, reductions, KV layout planning\n\n\
          useful commands:\n\
@@ -74,7 +74,7 @@ fn print_compile_attention_plan() {
 
 fn print_attention_probe() {
     let request = GgmlAttentionPrefillRequest::dense_i8(64, 64);
-    let caps = DeviceCapabilities::vortex_simx_default();
+    let caps = DeviceCapabilities::vortex_rtl_default();
     let accepted = mandrel_ggml_adapter::can_offload_attention_prefill(request, caps);
 
     println!("adapter backend: {}", backend_name());

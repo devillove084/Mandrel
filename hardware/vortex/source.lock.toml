@@ -10,6 +10,19 @@ repository = "https://github.com/devillove084/llvm.git"
 revision = "b2ecfe086df2d00233a87f3d3ebe6a74aba129e2"
 checkout = "external/llvm-vortex"
 
+[verilator]
+repository = "https://github.com/verilator/verilator.git"
+revision = "848d926ebd4addacacd294dc84e35d9d4ae8078c"
+tag = "v5.050"
+version = "5.050"
+checkout = "external/verilator"
+prefix = "external/verilator-install"
+
+[python]
+manager = "uv"
+version = "3.13.13"
+project = "."
+
 [policy]
 external_checkouts_are_generated = true
 tracked_inputs_live_under = "hardware/vortex"

@@ -20,8 +20,8 @@ impl BufferTransferTrace {
 
 /// Backend-neutral subset of a GPU kernel launch trace.
 ///
-/// This intentionally stores only stable scalar fields so measured traces from Vortex `simx`, RTL,
-/// or future backends can be compared against static `KernelMetrics` without depending on backend
+/// This intentionally stores only stable scalar fields so measured traces from Vortex RTL or
+/// future backends can be compared against static `KernelMetrics` without depending on backend
 /// handle layouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KernelLaunchTrace {

@@ -1,49 +1,33 @@
 use std::env;
 use std::fs;
-use std::num::ParseIntError;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::string::FromUtf8Error;
 
-use mandrel_artifact::VortexMlirKernelArtifacts;
 use snafu::Snafu;
 
 pub const DEFAULT_VORTEX_DIR: &str = "external/vortex";
-pub const DEFAULT_VORTEX_URL: &str = "https://github.com/vortexgpgpu/vortex.git";
 pub const DEFAULT_VORTEX_BUILD_DIR: &str = "external/vortex-build";
 pub const DEFAULT_VORTEX_TOOLDIR: &str = "external/vortex-source-tools";
-pub const DEFAULT_VORTEX_SYSTEM_TOOLDIR: &str = "external/vortex-system-tools";
-pub const DEFAULT_VORTEX_ENV_FILE: &str = "external/vortex-env.sh";
-pub const DEFAULT_FETCH_RETRIES: u32 = 3;
-pub const VORTEX_PREBUILT_HOST_ARCH: &str = "x86_64";
+pub const DEFAULT_VERILATOR_DIR: &str = "external/verilator-install";
+pub const DEFAULT_PYTHON_VENV_DIR: &str = ".venv";
+
+const VORTEX_RV64_MARCH: &str = "rv64imfd_xvortex";
+// The probe is inspected but never executed. Keep address-zero weak libc symbols within medany range.
+const VORTEX_RV64_STARTUP_PROBE_ADDR: &str = "0x40000000";
+const VORTEX_RV64_STARTUP_ADDR: &str = "0x180000000";
 
 pub type VortexToolchainResult<T> = Result<T, VortexToolchainError>;
 
 #[derive(Debug, Snafu)]
 pub enum VortexToolchainError {
-    #[snafu(display(
-        "unsupported MANDREL_VORTEX_TOOLCHAIN_MODE '{value}'; use auto, prebuilt, system, or skip"
-    ))]
-    UnsupportedToolchainMode { value: String },
     #[snafu(display("unsupported MANDREL_VORTEX_XLEN '{xlen}'; use 32 or 64"))]
     UnsupportedXlen { xlen: u32 },
     #[snafu(display(
         "Vortex MLIR artifact pipeline currently targets rv64; got MANDREL_VORTEX_XLEN={xlen}"
     ))]
     UnsupportedMlirXlen { xlen: u32 },
-    #[snafu(display(
-        "Vortex upstream toolchain_install.sh fetches host prebuilt packages and this host is '{host_arch}', not '{expected_arch}'. To avoid running incompatible prebuilt binaries, either use Ubuntu/system packages with MANDREL_VORTEX_TOOLCHAIN_MODE=system, source-build/populate '{}' and rerun with MANDREL_VORTEX_TOOLCHAIN_MODE=skip, or force the upstream prebuilt path with MANDREL_VORTEX_TOOLCHAIN_MODE=prebuilt.",
-        tool_dir.display()
-    ))]
-    UnsupportedPrebuiltHost {
-        host_arch: &'static str,
-        expected_arch: &'static str,
-        tool_dir: PathBuf,
-    },
-    #[snafu(display("invalid MANDREL_FETCH_RETRIES '{raw}': {source}"))]
-    InvalidFetchRetries { raw: String, source: ParseIntError },
-    #[snafu(display("MANDREL_FETCH_RETRIES must be at least 1"))]
-    FetchRetriesZero,
+
     #[snafu(display("cannot determine parent directory for {description} '{}'", path.display()))]
     MissingParent { description: String, path: PathBuf },
     #[snafu(display("missing {description}: {}", path.display()))]
@@ -84,6 +68,23 @@ pub enum VortexToolchainError {
         elf_path: PathBuf,
         symbol: String,
         stdout: String,
+    },
+    #[snafu(display("materialized Vortex configuration is missing resolved ISA flag '{name}'"))]
+    MissingVortexIsaConfig { name: String },
+    #[snafu(display(
+        "generated ELF '{}' has no readable RISC-V arch build attribute; llvm-readelf stdout:\n{stdout}",
+        elf_path.display()
+    ))]
+    MissingElfIsaAttribute { elf_path: PathBuf, stdout: String },
+    #[snafu(display(
+        "generated ELF '{}' ISA '{elf_arch}' is incompatible with materialized RTL ISA '{rtl_isa}': {mismatches}",
+        elf_path.display()
+    ))]
+    IncompatibleElfIsa {
+        elf_path: PathBuf,
+        elf_arch: String,
+        rtl_isa: String,
+        mismatches: String,
     },
     #[snafu(display(
         "generated vxbin '{}' is missing VXSYMTAB footer; named runtime lookup for '{symbol_name}' would fail",
@@ -132,67 +133,18 @@ impl From<&str> for VortexToolchainError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VortexToolchainMode {
-    Auto,
-    Prebuilt,
-    System,
-    Skip,
-}
-
-impl VortexToolchainMode {
-    pub fn from_env() -> VortexToolchainResult<Self> {
-        let Some(raw) = non_empty_env("MANDREL_VORTEX_TOOLCHAIN_MODE") else {
-            return Ok(Self::default_for_host());
-        };
-
-        match raw.as_str() {
-            "auto" => Ok(Self::Auto),
-            "prebuilt" => Ok(Self::Prebuilt),
-            "system" | "ubuntu" => Ok(Self::System),
-            "skip" | "external" => Ok(Self::Skip),
-            other => Err(VortexToolchainError::UnsupportedToolchainMode {
-                value: other.to_owned(),
-            }),
-        }
-    }
-
-    pub fn default_for_host() -> Self {
-        if env::consts::ARCH == VORTEX_PREBUILT_HOST_ARCH {
-            Self::Auto
-        } else {
-            Self::System
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Prebuilt => "prebuilt",
-            Self::System => "system",
-            Self::Skip => "skip",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VortexConfig {
     pub source_dir: PathBuf,
     pub build_dir: PathBuf,
     pub tool_dir: PathBuf,
-    pub env_file: PathBuf,
-    pub url: String,
-    pub download_proxy_prefix: Option<String>,
-    pub git_proxy_prefix: Option<String>,
-    pub fetch_retries: u32,
-    pub reference: Option<String>,
+    pub verilator_dir: PathBuf,
+    pub python_venv_dir: PathBuf,
     pub xlen: u32,
-    pub toolchain_mode: VortexToolchainMode,
 }
 
 impl VortexConfig {
     pub fn from_env(workspace_root: &Path) -> VortexToolchainResult<Self> {
-        let toolchain_mode = VortexToolchainMode::from_env()?;
         let source_dir =
             project_path_from_env(workspace_root, "MANDREL_VORTEX_DIR", DEFAULT_VORTEX_DIR);
         let build_dir = project_path_from_env(
@@ -205,17 +157,16 @@ impl VortexConfig {
             "MANDREL_VORTEX_TOOLDIR",
             DEFAULT_VORTEX_TOOLDIR,
         );
-        let env_file = project_path_from_env(
+        let verilator_dir = project_path_from_env(
             workspace_root,
-            "MANDREL_VORTEX_ENV_FILE",
-            DEFAULT_VORTEX_ENV_FILE,
+            "MANDREL_VERILATOR_DIR",
+            DEFAULT_VERILATOR_DIR,
         );
-        let url = env::var("MANDREL_VORTEX_URL").unwrap_or_else(|_| DEFAULT_VORTEX_URL.to_owned());
-        let download_proxy_prefix =
-            non_empty_env("MANDREL_GITHUB_PROXY_PREFIX").or_else(|| non_empty_env("PROXY_PREFIX"));
-        let git_proxy_prefix = non_empty_env("MANDREL_GIT_PROXY_PREFIX");
-        let fetch_retries = parse_fetch_retries()?;
-        let reference = non_empty_env("MANDREL_VORTEX_REF");
+        let python_venv_dir = project_path_from_env(
+            workspace_root,
+            "MANDREL_PYTHON_VENV_DIR",
+            DEFAULT_PYTHON_VENV_DIR,
+        );
         let xlen = env::var("MANDREL_VORTEX_XLEN")
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
@@ -229,14 +180,9 @@ impl VortexConfig {
             source_dir,
             build_dir,
             tool_dir,
-            env_file,
-            url,
-            download_proxy_prefix,
-            git_proxy_prefix,
-            fetch_retries,
-            reference,
+            verilator_dir,
+            python_venv_dir,
             xlen,
-            toolchain_mode,
         })
     }
 
@@ -256,109 +202,8 @@ impl VortexConfig {
         self.lib_dir().join("pkgconfig")
     }
 
-    pub fn simx_dir(&self) -> PathBuf {
-        self.build_dir.join("sim/simx")
-    }
-
-    pub fn simx_binary(&self) -> PathBuf {
-        self.simx_dir().join("simx")
-    }
-
-    pub fn vortex_runtime_pc(&self) -> PathBuf {
-        self.pkg_config_dir().join("vortex-runtime.pc")
-    }
-
-    pub fn vortex_kernel_pc(&self) -> PathBuf {
-        self.pkg_config_dir().join("vortex-kernel.pc")
-    }
-
-    pub fn blackbox_script(&self) -> PathBuf {
-        self.build_dir.join("ci/blackbox.sh")
-    }
-
-    pub fn download_wrapper_dir(&self) -> PathBuf {
-        self.build_dir.join("mandrel-download-wrappers")
-    }
-
-    pub fn clone_url(&self) -> String {
-        match &self.git_proxy_prefix {
-            Some(prefix) => maybe_proxied_github_url(&self.url, prefix),
-            None => self.url.clone(),
-        }
-    }
-
-    pub fn git_proxy_base(&self) -> Option<String> {
-        self.git_proxy_prefix.as_deref().map(github_proxy_base)
-    }
-
-    pub fn normalized_download_proxy_prefix(&self) -> Option<String> {
-        self.download_proxy_prefix
-            .as_deref()
-            .map(normalized_proxy_prefix)
-    }
-
-    pub fn should_run_prebuilt_toolchain(&self) -> VortexToolchainResult<bool> {
-        match self.toolchain_mode {
-            VortexToolchainMode::Prebuilt => Ok(true),
-            VortexToolchainMode::System | VortexToolchainMode::Skip => Ok(false),
-            VortexToolchainMode::Auto if env::consts::ARCH == VORTEX_PREBUILT_HOST_ARCH => Ok(true),
-            VortexToolchainMode::Auto => Err(VortexToolchainError::UnsupportedPrebuiltHost {
-                host_arch: env::consts::ARCH,
-                expected_arch: VORTEX_PREBUILT_HOST_ARCH,
-                tool_dir: self.tool_dir.clone(),
-            }),
-        }
-    }
-
-    pub fn configure_command(&self) -> Command {
-        let mut command = Command::new(self.source_dir.join("configure"));
-        command
-            .current_dir(&self.build_dir)
-            .arg(format!("--xlen={}", self.xlen))
-            .arg(format!("--tooldir={}", self.tool_dir.display()))
-            .arg(format!("--prefix={}", self.install_dir().display()));
-        command
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VortexStatus {
-    pub checkout_exists: bool,
-    pub build_dir_exists: bool,
-    pub install_dir_exists: bool,
-    pub env_file_exists: bool,
-    pub download_wrapper_dir_exists: bool,
-    pub blackbox_script_exists: bool,
-    pub simx_binary_exists: bool,
-    pub runtime_pkg_config_exists: bool,
-    pub kernel_pkg_config_exists: bool,
-}
-
-impl VortexStatus {
-    pub fn probe(config: &VortexConfig) -> Self {
-        Self {
-            checkout_exists: config.source_dir.join(".git").is_dir(),
-            build_dir_exists: config.build_dir.is_dir(),
-            install_dir_exists: config.install_dir().is_dir(),
-            env_file_exists: config.env_file.is_file(),
-            download_wrapper_dir_exists: config.download_wrapper_dir().is_dir(),
-            blackbox_script_exists: config.blackbox_script().is_file(),
-            simx_binary_exists: config.simx_binary().is_file(),
-            runtime_pkg_config_exists: config.vortex_runtime_pc().is_file(),
-            kernel_pkg_config_exists: config.vortex_kernel_pc().is_file(),
-        }
-    }
-
-    pub const fn can_run_blackbox(self) -> bool {
-        self.checkout_exists && self.blackbox_script_exists && self.simx_binary_exists
-    }
-
-    pub const fn can_run_simx(self) -> bool {
-        self.simx_binary_exists
-    }
-
-    pub const fn can_use_installed_runtime(self) -> bool {
-        self.install_dir_exists && self.runtime_pkg_config_exists && self.kernel_pkg_config_exists
+    pub fn python_binary(&self) -> PathBuf {
+        self.python_venv_dir.join("bin/python")
     }
 }
 
@@ -368,13 +213,38 @@ pub trait VortexCommandRunner {
     fn output(&mut self, phase: &str, command: Command) -> VortexToolchainResult<Output>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VortexKernelBuildOutputs {
+    pub mlir_path: PathBuf,
+    pub ll_path: PathBuf,
+    pub obj_path: PathBuf,
+    pub startup_probe_elf_path: PathBuf,
+    pub startup_object_path: PathBuf,
+    pub elf_path: PathBuf,
+    pub vxbin_path: PathBuf,
+}
+
+impl VortexKernelBuildOutputs {
+    pub fn under_output_dir(out_dir: &Path, symbol_name: &str) -> Self {
+        Self {
+            mlir_path: out_dir.join(format!("{symbol_name}.mlir")),
+            ll_path: out_dir.join(format!("{symbol_name}.ll")),
+            obj_path: out_dir.join(format!("{symbol_name}.o")),
+            startup_probe_elf_path: out_dir.join(format!("{symbol_name}.startup_probe.elf")),
+            startup_object_path: out_dir.join(format!("{symbol_name}.vx_start.o")),
+            elf_path: out_dir.join(format!("{symbol_name}.elf")),
+            vxbin_path: out_dir.join(format!("{symbol_name}.vxbin")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct VortexMlirKernelBuildRequest<'a> {
     pub workspace_root: &'a Path,
     pub config: &'a VortexConfig,
     pub symbol_name: &'a str,
     pub source: &'a str,
-    pub artifacts: &'a VortexMlirKernelArtifacts,
+    pub outputs: &'a VortexKernelBuildOutputs,
     pub phase_prefix: &'a str,
 }
 
@@ -417,12 +287,12 @@ where
     }
 
     ensure_parent_dir(
-        &request.artifacts.mlir_path,
+        &request.outputs.mlir_path,
         "generated Vortex output directory",
     )?;
-    fs::write(&request.artifacts.mlir_path, request.source).map_err(|source| {
+    fs::write(&request.outputs.mlir_path, request.source).map_err(|source| {
         VortexToolchainError::WriteFile {
-            path: request.artifacts.mlir_path.clone(),
+            path: request.outputs.mlir_path.clone(),
             source,
         }
     })?;
@@ -435,10 +305,10 @@ where
         VortexKernelLinkRequest {
             workspace_root: request.workspace_root,
             config: request.config,
-            kernel_object_path: &request.artifacts.obj_path,
-            startup_probe_elf_path: &request.artifacts.startup_probe_elf_path,
-            startup_object_path: &request.artifacts.startup_object_path,
-            elf_path: &request.artifacts.elf_path,
+            kernel_object_path: &request.outputs.obj_path,
+            startup_probe_elf_path: &request.outputs.startup_probe_elf_path,
+            startup_object_path: &request.outputs.startup_object_path,
+            elf_path: &request.outputs.elf_path,
             kentry_symbol: &kentry_symbol,
             phase_prefix: request.phase_prefix,
         },
@@ -447,8 +317,15 @@ where
     verify_vortex_kernel_elf_contains_symbol(
         request.workspace_root,
         request.config,
-        &request.artifacts.elf_path,
+        &request.outputs.elf_path,
         &kentry_symbol,
+        request.phase_prefix,
+        runner,
+    )?;
+    verify_vortex_kernel_elf_isa_compatibility(
+        request.workspace_root,
+        request.config,
+        &request.outputs.elf_path,
         request.phase_prefix,
         runner,
     )?;
@@ -456,13 +333,13 @@ where
         VortexVxbinPackageRequest {
             workspace_root: request.workspace_root,
             config: request.config,
-            elf_path: &request.artifacts.elf_path,
-            vxbin_path: &request.artifacts.vxbin_path,
+            elf_path: &request.outputs.elf_path,
+            vxbin_path: &request.outputs.vxbin_path,
             phase_prefix: request.phase_prefix,
         },
         runner,
     )?;
-    verify_vortex_vxbin_symbols(&request.artifacts.vxbin_path, request.symbol_name)
+    verify_vortex_vxbin_symbols(&request.outputs.vxbin_path, request.symbol_name)
 }
 
 pub fn link_vortex_kernel_object_to_elf<R>(
@@ -476,13 +353,16 @@ where
     require_file(request.kernel_object_path, "generated Vortex kernel object")?;
 
     run_vortex_kernel_link_command(
-        request.workspace_root,
-        request.config,
-        &tools,
-        [request.kernel_object_path],
-        request.kentry_symbol,
-        request.startup_probe_elf_path,
-        &prefixed_phase(request.phase_prefix, "clang_link_startup_probe_elf"),
+        VortexKernelLinkCommandRequest {
+            workspace_root: request.workspace_root,
+            config: request.config,
+            tools: &tools,
+            input_objects: [request.kernel_object_path],
+            kentry_symbol: request.kentry_symbol,
+            startup_addr: VORTEX_RV64_STARTUP_PROBE_ADDR,
+            output_elf: request.startup_probe_elf_path,
+            phase: &prefixed_phase(request.phase_prefix, "clang_link_startup_probe_elf"),
+        },
         runner,
     )?;
 
@@ -507,13 +387,16 @@ where
     )?;
 
     run_vortex_kernel_link_command(
-        request.workspace_root,
-        request.config,
-        &tools,
-        [request.startup_object_path, request.kernel_object_path],
-        request.kentry_symbol,
-        request.elf_path,
-        &prefixed_phase(request.phase_prefix, "clang_link_elf"),
+        VortexKernelLinkCommandRequest {
+            workspace_root: request.workspace_root,
+            config: request.config,
+            tools: &tools,
+            input_objects: [request.startup_object_path, request.kernel_object_path],
+            kentry_symbol: request.kentry_symbol,
+            startup_addr: VORTEX_RV64_STARTUP_ADDR,
+            output_elf: request.elf_path,
+            phase: &prefixed_phase(request.phase_prefix, "clang_link_elf"),
+        },
         runner,
     )
 }
@@ -531,7 +414,7 @@ where
     require_file(&vxbin_py, "Vortex vxbin packager")?;
     require_file(request.elf_path, "generated Vortex ELF")?;
 
-    let mut vxbin = Command::new("python3");
+    let mut vxbin = Command::new(request.config.python_binary());
     vxbin
         .current_dir(request.workspace_root)
         .env("OBJCOPY", &objcopy)
@@ -579,6 +462,193 @@ where
     }
 }
 
+pub fn verify_vortex_kernel_elf_isa_compatibility<R>(
+    workspace_root: &Path,
+    config: &VortexConfig,
+    elf_path: &Path,
+    phase_prefix: &str,
+    runner: &mut R,
+) -> VortexToolchainResult<()>
+where
+    R: VortexCommandRunner,
+{
+    let readelf = config.tool_dir.join("llvm-vortex/bin/llvm-readelf");
+    require_file(&readelf, "Vortex llvm-readelf")?;
+    require_file(elf_path, "generated Vortex ELF")?;
+
+    let config_flags = vortex_config_cflags(workspace_root, config, phase_prefix, runner)?;
+    let rtl_isa = VortexRtlIsa::from_config_flags(config.xlen, &config_flags)?;
+
+    let mut readelf_cmd = Command::new(&readelf);
+    readelf_cmd
+        .current_dir(workspace_root)
+        .arg("-A")
+        .arg(elf_path);
+    apply_vortex_command_env(&mut readelf_cmd, config)?;
+    let phase = prefixed_phase(phase_prefix, "elf_readelf_attributes");
+    let output = runner.output(&phase, readelf_cmd)?;
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|source| VortexToolchainError::NonUtf8Output { phase, source })?;
+    let elf_arch = parse_riscv_elf_arch_attribute(&stdout).ok_or_else(|| {
+        VortexToolchainError::MissingElfIsaAttribute {
+            elf_path: elf_path.to_path_buf(),
+            stdout: stdout.clone(),
+        }
+    })?;
+    let elf_isa = RiscvElfIsa::parse(elf_arch).ok_or_else(|| {
+        VortexToolchainError::MissingElfIsaAttribute {
+            elf_path: elf_path.to_path_buf(),
+            stdout: stdout.clone(),
+        }
+    })?;
+    let mismatches = elf_isa.mismatches(&rtl_isa);
+    if mismatches.is_empty() {
+        Ok(())
+    } else {
+        Err(VortexToolchainError::IncompatibleElfIsa {
+            elf_path: elf_path.to_path_buf(),
+            elf_arch: elf_arch.to_owned(),
+            rtl_isa: rtl_isa.summary(),
+            mismatches: mismatches.join(", "),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RiscvIsaExtensions {
+    xlen: u32,
+    m: bool,
+    a: bool,
+    f: bool,
+    d: bool,
+    c: bool,
+    v: bool,
+    zicond: bool,
+    xvortex: bool,
+}
+
+type RiscvElfIsa = RiscvIsaExtensions;
+type VortexRtlIsa = RiscvIsaExtensions;
+
+impl RiscvIsaExtensions {
+    fn parse(arch: &str) -> Option<Self> {
+        let mut tokens = arch.split('_');
+        let base = tokens.next()?;
+        let xlen = if base.starts_with("rv64") {
+            64
+        } else if base.starts_with("rv32") {
+            32
+        } else {
+            return None;
+        };
+        let extensions = tokens.collect::<Vec<_>>();
+        Some(Self {
+            xlen,
+            m: has_versioned_single_letter_extension(&extensions, "m"),
+            a: has_versioned_single_letter_extension(&extensions, "a"),
+            f: has_versioned_single_letter_extension(&extensions, "f"),
+            d: has_versioned_single_letter_extension(&extensions, "d"),
+            c: has_versioned_single_letter_extension(&extensions, "c"),
+            v: has_versioned_single_letter_extension(&extensions, "v"),
+            zicond: extensions.iter().any(|token| token.starts_with("zicond")),
+            xvortex: extensions.iter().any(|token| token.starts_with("xvortex")),
+        })
+    }
+
+    fn from_config_flags(xlen: u32, flags: &[String]) -> VortexToolchainResult<Self> {
+        Ok(Self {
+            xlen,
+            m: resolved_vortex_extension(flags, "VX_CFG_EXT_M_ENABLED")?,
+            a: resolved_vortex_extension(flags, "VX_CFG_EXT_A_ENABLED")?,
+            f: resolved_vortex_extension(flags, "VX_CFG_EXT_F_ENABLED")?,
+            d: resolved_vortex_extension(flags, "VX_CFG_EXT_D_ENABLED")?,
+            c: resolved_vortex_extension(flags, "VX_CFG_EXT_C_ENABLED")?,
+            v: resolved_vortex_extension(flags, "VX_CFG_EXT_V_ENABLED")?,
+            zicond: resolved_vortex_extension(flags, "VX_CFG_EXT_ZICOND_ENABLED")?,
+            xvortex: true,
+        })
+    }
+
+    fn mismatches(&self, rtl: &Self) -> Vec<String> {
+        let mut mismatches = Vec::new();
+        if self.xlen != rtl.xlen {
+            mismatches.push(format!("ELF XLEN={} but RTL XLEN={}", self.xlen, rtl.xlen));
+        }
+        for (name, required, available) in [
+            ("M", self.m, rtl.m),
+            ("A", self.a, rtl.a),
+            ("F", self.f, rtl.f),
+            ("D", self.d, rtl.d),
+            ("C", self.c, rtl.c),
+            ("V", self.v, rtl.v),
+            ("Zicond", self.zicond, rtl.zicond),
+        ] {
+            if required && !available {
+                mismatches.push(format!("ELF requires {name} but RTL disables it"));
+            }
+        }
+        if !self.xvortex {
+            mismatches.push(String::from(
+                "ELF does not declare required xvortex extension",
+            ));
+        }
+        mismatches
+    }
+
+    fn summary(&self) -> String {
+        let mut summary = format!("rv{}i", self.xlen);
+        for (enabled, name) in [
+            (self.m, "m"),
+            (self.a, "a"),
+            (self.f, "f"),
+            (self.d, "d"),
+            (self.c, "c"),
+            (self.v, "v"),
+        ] {
+            if enabled {
+                summary.push_str(name);
+            }
+        }
+        if self.zicond {
+            summary.push_str("_zicond");
+        }
+        if self.xvortex {
+            summary.push_str("_xvortex");
+        }
+        summary
+    }
+}
+
+fn parse_riscv_elf_arch_attribute(stdout: &str) -> Option<&str> {
+    stdout.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("Value:")?.trim();
+        value.starts_with("rv").then_some(value)
+    })
+}
+
+fn has_versioned_single_letter_extension(extensions: &[&str], name: &str) -> bool {
+    extensions.iter().any(|extension| {
+        extension
+            .strip_prefix(name)
+            .is_some_and(|version| version.as_bytes().first().is_some_and(u8::is_ascii_digit))
+    })
+}
+
+fn resolved_vortex_extension(flags: &[String], name: &str) -> VortexToolchainResult<bool> {
+    let prefix = format!("-D{name}=");
+    flags
+        .iter()
+        .find_map(|flag| flag.strip_prefix(&prefix))
+        .and_then(|value| match value {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        })
+        .ok_or_else(|| VortexToolchainError::MissingVortexIsaConfig {
+            name: name.to_owned(),
+        })
+}
+
 pub fn verify_vortex_vxbin_symbols(
     vxbin_path: &Path,
     symbol_name: &str,
@@ -607,10 +677,8 @@ pub fn apply_vortex_command_env(
     command.env("VORTEX_BUILD_DIR", &config.build_dir);
     command.env("VORTEX_TOOL_DIR", &config.tool_dir);
     command.env("VORTEX_PATH", config.install_dir());
-    command.env("MANDREL_FETCH_RETRIES", config.fetch_retries.to_string());
-    if let Some(prefix) = config.normalized_download_proxy_prefix() {
-        command.env("MANDREL_GITHUB_PROXY_PREFIX", prefix);
-    }
+    command.env("VERILATOR_PATH", &config.verilator_dir);
+    command.env("VORTEX_DRIVER", "rtlsim");
     prepend_command_env_path(command, "PKG_CONFIG_PATH", config.pkg_config_dir())?;
     prepend_command_env_paths(
         command,
@@ -625,7 +693,13 @@ pub fn apply_vortex_command_env(
     prepend_command_env_paths(
         command,
         "PATH",
-        [config.tool_dir.join("llvm-vortex/bin"), config.bin_dir()],
+        [
+            config.python_venv_dir.join("bin"),
+            config.verilator_dir.join("bin"),
+            config.tool_dir.join("llvm-vortex/bin"),
+            config.tool_dir.join("riscv64-gnu-toolchain/bin"),
+            config.bin_dir(),
+        ],
     )?;
     Ok(())
 }
@@ -690,9 +764,9 @@ where
     translate
         .current_dir(request.workspace_root)
         .arg("--mlir-to-llvmir")
-        .arg(&request.artifacts.mlir_path)
+        .arg(&request.outputs.mlir_path)
         .arg("-o")
-        .arg(&request.artifacts.ll_path);
+        .arg(&request.outputs.ll_path);
     apply_vortex_command_env(&mut translate, request.config)?;
     runner.run(
         &prefixed_phase(request.phase_prefix, "mlir_translate"),
@@ -716,11 +790,11 @@ where
         .arg("-c")
         .arg("-target")
         .arg("riscv64-unknown-unknown-elf")
-        .arg("-march=rv64imafdc_xvortex")
+        .arg(format!("-march={VORTEX_RV64_MARCH}"))
         .arg("-O1")
-        .arg(&request.artifacts.ll_path)
+        .arg(&request.outputs.ll_path)
         .arg("-o")
-        .arg(&request.artifacts.obj_path);
+        .arg(&request.outputs.obj_path);
     apply_vortex_command_env(&mut clang_cmd, request.config)?;
     runner.run(
         &prefixed_phase(request.phase_prefix, "clang_object"),
@@ -728,56 +802,63 @@ where
     )
 }
 
-fn run_vortex_kernel_link_command<'a, R, I>(
-    workspace_root: &Path,
-    config: &VortexConfig,
-    tools: &VortexRv64KernelLinkTools,
+struct VortexKernelLinkCommandRequest<'a, I> {
+    workspace_root: &'a Path,
+    config: &'a VortexConfig,
+    tools: &'a VortexRv64KernelLinkTools,
     input_objects: I,
-    kentry_symbol: &str,
-    output_elf: &Path,
-    phase: &str,
+    kentry_symbol: &'a str,
+    startup_addr: &'a str,
+    output_elf: &'a Path,
+    phase: &'a str,
+}
+
+fn run_vortex_kernel_link_command<'a, R, I>(
+    request: VortexKernelLinkCommandRequest<'a, I>,
     runner: &mut R,
 ) -> VortexToolchainResult<()>
 where
     R: VortexCommandRunner,
     I: IntoIterator<Item = &'a Path>,
 {
-    let riscv_sysroot = config
+    let riscv_sysroot = request
+        .config
         .tool_dir
         .join("riscv64-gnu-toolchain/riscv64-unknown-elf");
-    let riscv_toolchain = config.tool_dir.join("riscv64-gnu-toolchain");
+    let riscv_toolchain = request.config.tool_dir.join("riscv64-gnu-toolchain");
 
-    let mut clang_cmd = Command::new(&tools.clang);
+    let mut clang_cmd = Command::new(&request.tools.clang);
     clang_cmd
-        .current_dir(workspace_root)
+        .current_dir(request.workspace_root)
         .arg("-target")
         .arg("riscv64-unknown-unknown-elf")
         .arg(format!("--sysroot={}", riscv_sysroot.display()))
         .arg(format!("--gcc-toolchain={}", riscv_toolchain.display()))
-        .arg("-march=rv64imafdc_xvortex")
+        .arg(format!("-march={VORTEX_RV64_MARCH}"))
         .arg("-mabi=lp64d")
         .arg("-mcmodel=medany")
         .arg("-fuse-ld=lld")
         .arg("-nostartfiles")
         .arg("-nostdlib");
-    for object in input_objects {
+    for object in request.input_objects {
         clang_cmd.arg(object);
     }
     clang_cmd
         .arg(format!(
-            "-Wl,-Bstatic,--gc-sections,-T,{},--defsym=STARTUP_ADDR=0x80000000,--undefined={}",
-            tools.link_script.display(),
-            kentry_symbol
+            "-Wl,-Bstatic,--gc-sections,-T,{},--defsym=STARTUP_ADDR={},--undefined={}",
+            request.tools.link_script.display(),
+            request.startup_addr,
+            request.kentry_symbol
         ))
-        .arg(&tools.kernel_runtime)
-        .arg(format!("-L{}", tools.libc_dir.display()))
+        .arg(&request.tools.kernel_runtime)
+        .arg(format!("-L{}", request.tools.libc_dir.display()))
         .arg("-lm")
         .arg("-lc")
-        .arg(&tools.builtins)
+        .arg(&request.tools.builtins)
         .arg("-o")
-        .arg(output_elf);
-    apply_vortex_command_env(&mut clang_cmd, config)?;
-    runner.run(phase, clang_cmd)
+        .arg(request.output_elf);
+    apply_vortex_command_env(&mut clang_cmd, request.config)?;
+    runner.run(request.phase, clang_cmd)
 }
 
 fn detect_vortex_startup_flags<R>(
@@ -822,7 +903,7 @@ where
     require_file(&gen_config, "Vortex config flag generator")?;
     require_file(&vx_config, "Vortex config TOML")?;
 
-    let mut command = Command::new("python3");
+    let mut command = Command::new(config.python_binary());
     command
         .current_dir(workspace_root)
         .arg(&gen_config)
@@ -878,7 +959,7 @@ where
         .arg("riscv64-unknown-unknown-elf")
         .arg(format!("--sysroot={}", riscv_sysroot.display()))
         .arg(format!("--gcc-toolchain={}", riscv_toolchain.display()))
-        .arg("-march=rv64imafdc_xvortex")
+        .arg(format!("-march={VORTEX_RV64_MARCH}"))
         .arg("-mabi=lp64d")
         .arg("-mcmodel=medany")
         .arg("-O3")
@@ -977,116 +1058,125 @@ fn project_path_from_env(workspace_root: &Path, env_name: &str, default: &str) -
     }
 }
 
-fn non_empty_env(name: &str) -> Option<String> {
-    env::var(name)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-}
-
-fn parse_fetch_retries() -> VortexToolchainResult<u32> {
-    let Some(raw) = non_empty_env("MANDREL_FETCH_RETRIES") else {
-        return Ok(DEFAULT_FETCH_RETRIES);
-    };
-
-    let retries =
-        raw.parse::<u32>()
-            .map_err(|source| VortexToolchainError::InvalidFetchRetries {
-                raw: raw.clone(),
-                source,
-            })?;
-    if retries == 0 {
-        return Err(VortexToolchainError::FetchRetriesZero);
-    }
-    Ok(retries)
-}
-
-fn normalized_proxy_prefix(prefix: &str) -> String {
-    if prefix.ends_with('/') {
-        prefix.to_owned()
-    } else {
-        format!("{prefix}/")
-    }
-}
-
-fn github_proxy_base(prefix: &str) -> String {
-    format!("{}https://github.com/", normalized_proxy_prefix(prefix))
-}
-
-fn maybe_proxied_github_url(url: &str, prefix: &str) -> String {
-    let base = github_proxy_base(prefix);
-    if let Some(rest) = url.strip_prefix("https://github.com/") {
-        format!("{base}{rest}")
-    } else if let Some(rest) = url.strip_prefix("http://github.com/") {
-        format!("{base}{rest}")
-    } else if let Some(rest) = url.strip_prefix("git@github.com:") {
-        format!("{base}{rest}")
-    } else if let Some(rest) = url.strip_prefix("ssh://git@github.com/") {
-        format!("{base}{rest}")
-    } else {
-        url.to_owned()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{VortexConfig, VortexStatus, VortexToolchainMode};
+    use super::{
+        RiscvIsaExtensions, VortexConfig, VortexKernelBuildOutputs, VortexToolchainError,
+        parse_riscv_elf_arch_attribute,
+    };
     use std::path::Path;
 
     #[test]
-    fn status_probe_is_false_for_missing_checkout() {
-        let config = match VortexConfig::from_env(Path::new("/tmp/mandrel-missing")) {
+    fn config_describes_project_local_materialized_tools() {
+        let root = Path::new("/tmp/mandrel");
+        let config = match VortexConfig::from_env(root) {
             Ok(config) => config,
             Err(error) => panic!("unexpected config error: {error}"),
         };
-        let status = VortexStatus::probe(&config);
 
-        assert!(!status.can_run_blackbox());
-        assert!(!status.can_use_installed_runtime());
+        assert_eq!(config.source_dir, root.join("external/vortex"));
+        assert_eq!(config.build_dir, root.join("external/vortex-build"));
+        assert_eq!(config.tool_dir, root.join("external/vortex-source-tools"));
+        assert_eq!(
+            config.verilator_dir,
+            root.join("external/verilator-install")
+        );
+        assert_eq!(config.python_binary(), root.join(".venv/bin/python"));
     }
 
     #[test]
-    fn download_proxy_prefix_does_not_change_clone_url() {
-        let config = VortexConfig {
-            source_dir: Path::new("/tmp/mandrel/source").to_path_buf(),
-            build_dir: Path::new("/tmp/mandrel/build").to_path_buf(),
-            tool_dir: Path::new("/tmp/mandrel/tools").to_path_buf(),
-            env_file: Path::new("/tmp/mandrel/env.sh").to_path_buf(),
-            url: "https://github.com/vortexgpgpu/vortex.git".to_owned(),
-            download_proxy_prefix: Some("https://gh-proxy.org".to_owned()),
-            git_proxy_prefix: None,
-            fetch_retries: 3,
-            reference: None,
-            xlen: 64,
-            toolchain_mode: VortexToolchainMode::Auto,
-        };
+    fn kernel_build_output_paths_follow_kernel_symbol() {
+        let out_dir = Path::new("target/mandrel/vortex");
+        let outputs = VortexKernelBuildOutputs::under_output_dir(out_dir, "attention_prefill_i8");
 
         assert_eq!(
-            config.clone_url(),
-            "https://github.com/vortexgpgpu/vortex.git"
-        );
-        assert_eq!(
-            config.normalized_download_proxy_prefix().as_deref(),
-            Some("https://gh-proxy.org/")
+            outputs,
+            VortexKernelBuildOutputs {
+                mlir_path: out_dir.join("attention_prefill_i8.mlir"),
+                ll_path: out_dir.join("attention_prefill_i8.ll"),
+                obj_path: out_dir.join("attention_prefill_i8.o"),
+                startup_probe_elf_path: out_dir.join("attention_prefill_i8.startup_probe.elf"),
+                startup_object_path: out_dir.join("attention_prefill_i8.vx_start.o"),
+                elf_path: out_dir.join("attention_prefill_i8.elf"),
+                vxbin_path: out_dir.join("attention_prefill_i8.vxbin"),
+            }
         );
     }
 
     #[test]
-    fn skip_toolchain_mode_does_not_run_prebuilt() {
-        let config = VortexConfig {
-            source_dir: Path::new("/tmp/mandrel/source").to_path_buf(),
-            build_dir: Path::new("/tmp/mandrel/build").to_path_buf(),
-            tool_dir: Path::new("/tmp/mandrel/tools").to_path_buf(),
-            env_file: Path::new("/tmp/mandrel/env.sh").to_path_buf(),
-            url: "https://github.com/vortexgpgpu/vortex.git".to_owned(),
-            download_proxy_prefix: None,
-            git_proxy_prefix: None,
-            fetch_retries: 3,
-            reference: None,
-            xlen: 64,
-            toolchain_mode: VortexToolchainMode::Skip,
+    fn parses_llvm_readelf_riscv_arch_attribute() {
+        let stdout = "BuildAttributes {\n  Value: 16\n  Value: rv64i2p1_m2p0_f2p2_d2p2_zicsr2p0_xvortex1p0\n}\n";
+        assert_eq!(
+            parse_riscv_elf_arch_attribute(stdout),
+            Some("rv64i2p1_m2p0_f2p2_d2p2_zicsr2p0_xvortex1p0")
+        );
+    }
+
+    #[test]
+    fn accepts_elf_isa_subset_of_materialized_rtl() {
+        let flags = resolved_rtl_flags();
+        let rtl = match RiscvIsaExtensions::from_config_flags(64, &flags) {
+            Ok(isa) => isa,
+            Err(error) => panic!("unexpected RTL ISA parse error: {error}"),
+        };
+        let elf =
+            match RiscvIsaExtensions::parse("rv64i2p1_m2p0_f2p2_d2p2_zicsr2p0_zmmul1p0_xvortex1p0")
+            {
+                Some(isa) => isa,
+                None => panic!("expected ELF ISA to parse"),
+            };
+
+        assert!(elf.mismatches(&rtl).is_empty());
+    }
+
+    #[test]
+    fn rejects_elf_extensions_disabled_in_materialized_rtl() {
+        let flags = resolved_rtl_flags();
+        let rtl = match RiscvIsaExtensions::from_config_flags(64, &flags) {
+            Ok(isa) => isa,
+            Err(error) => panic!("unexpected RTL ISA parse error: {error}"),
+        };
+        let elf = match RiscvIsaExtensions::parse(
+            "rv64i2p1_m2p0_a2p1_f2p2_d2p2_c2p0_zicsr2p0_zaamo1p0_zalrsc1p0_xvortex1p0",
+        ) {
+            Some(isa) => isa,
+            None => panic!("expected ELF ISA to parse"),
         };
 
-        assert!(matches!(config.should_run_prebuilt_toolchain(), Ok(false)));
+        assert_eq!(
+            elf.mismatches(&rtl),
+            [
+                String::from("ELF requires A but RTL disables it"),
+                String::from("ELF requires C but RTL disables it"),
+            ]
+        );
+    }
+
+    #[test]
+    fn requires_resolved_rtl_extension_flags() {
+        let error = match RiscvIsaExtensions::from_config_flags(64, &[]) {
+            Ok(_) => panic!("expected missing config flag to fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            VortexToolchainError::MissingVortexIsaConfig { name }
+                if name == "VX_CFG_EXT_M_ENABLED"
+        ));
+    }
+
+    fn resolved_rtl_flags() -> Vec<String> {
+        [
+            "-DVX_CFG_EXT_M_ENABLED=1",
+            "-DVX_CFG_EXT_A_ENABLED=0",
+            "-DVX_CFG_EXT_F_ENABLED=1",
+            "-DVX_CFG_EXT_D_ENABLED=1",
+            "-DVX_CFG_EXT_C_ENABLED=0",
+            "-DVX_CFG_EXT_V_ENABLED=0",
+            "-DVX_CFG_EXT_ZICOND_ENABLED=1",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
     }
 }

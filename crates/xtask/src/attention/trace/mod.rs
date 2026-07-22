@@ -136,7 +136,7 @@ fn attention_target_contract_from_record(
     record: AttentionRuntimeTraceRecord,
 ) -> Option<TargetContract> {
     let metadata = record.metadata;
-    let mut requested = TargetSpec::vortex_simx_default();
+    let mut requested = TargetSpec::vortex_rtl_default();
     requested.name = "attention_trace_requested_target";
     requested.backend = metadata
         .requested_target_backend
@@ -228,7 +228,7 @@ mod tests {
         collect_attention_runtime_trace_with_enrichment,
     };
 
-    const TRACE_STDOUT: &str = "PERF: instrs=165144, cycles=414598, IPC=0.398\nattention.runtime: compare summary elements=128 mismatches=0 status=exact\nMANDREL_RUNTIME_TRACE: kernel=attention_prefill_i8 runtime_sequence=8 runtime_head_dim=16 query_tile=4 key_tile=1 compiled_sequence=64 compiled_head_dim=64 head_dim_tile=64 logical_macs=2048 lowered_macs=33792 estimated_global_bytes_read=66560 estimated_global_bytes_written=128 estimated_local_memory_bytes_per_workgroup=0 requested_target_backend=vortex_simx requested_target_xlen=64 requested_target_max_workgroup_threads=16 requested_target_preferred_subgroup_width=4 requested_target_local_memory_bytes=16384 requested_target_supports_int8=true requested_target_supports_float32=true requested_target_supports_tensor_cores=false requested_target_supports_async_copy=false observed_target_backend=vortex_simx observed_target_xlen=64 observed_target_preferred_subgroup_width=4 observed_target_supports_int8=true observed_target_supports_float32=true observed_target_supports_tensor_cores=false observed_target_supports_async_copy=false target_compatible=true target_mismatch_mask=0 target_threads_per_warp=4 target_warps_per_core=4 target_max_workgroup_threads=16 target_local_memory_bytes=16384 workgroup_count=16 threads_per_workgroup=16 total_threads=256 runtime_q_elements=128 runtime_kv_elements=256 runtime_output_elements=128 runtime_q_bytes=128 runtime_kv_bytes=256 runtime_output_bytes=128 module_cache_hit=false kernel_cache_hit=false grid=16x1x1 block=4x4x1 shared_memory_bytes=0 host_to_device_bytes=384 device_to_host_bytes=128\n";
+    const TRACE_STDOUT: &str = "PERF: instrs=165144, cycles=414598, IPC=0.398\nattention.runtime: compare summary elements=128 mismatches=0 status=exact\nMANDREL_RUNTIME_TRACE: kernel=attention_prefill_i8 runtime_sequence=8 runtime_head_dim=16 query_tile=4 key_tile=1 compiled_sequence=64 compiled_head_dim=64 head_dim_tile=64 logical_macs=2048 lowered_macs=33792 estimated_global_bytes_read=66560 estimated_global_bytes_written=128 estimated_local_memory_bytes_per_workgroup=0 requested_target_backend=vortex_rtl requested_target_xlen=64 requested_target_max_workgroup_threads=16 requested_target_preferred_subgroup_width=4 requested_target_local_memory_bytes=16384 requested_target_supports_int8=true requested_target_supports_float32=true requested_target_supports_tensor_cores=false requested_target_supports_async_copy=false observed_target_backend=vortex_rtl observed_target_xlen=64 observed_target_preferred_subgroup_width=4 observed_target_supports_int8=true observed_target_supports_float32=true observed_target_supports_tensor_cores=false observed_target_supports_async_copy=false target_compatible=true target_mismatch_mask=0 target_threads_per_warp=4 target_warps_per_core=4 target_max_workgroup_threads=16 target_local_memory_bytes=16384 workgroup_count=16 threads_per_workgroup=16 total_threads=256 runtime_q_elements=128 runtime_kv_elements=256 runtime_output_elements=128 runtime_q_bytes=128 runtime_kv_bytes=256 runtime_output_bytes=128 module_cache_hit=false kernel_cache_hit=false grid=16x1x1 block=4x4x1 shared_memory_bytes=0 host_to_device_bytes=384 device_to_host_bytes=128\n";
 
     #[test]
     fn collects_current_attention_runtime_evidence() {
@@ -250,7 +250,7 @@ mod tests {
         assert_eq!(record.metadata.runtime_head_dim, Some(16));
         assert_eq!(
             record.metadata.requested_target_backend,
-            Some(DeviceBackend::VortexSimx)
+            Some(DeviceBackend::VortexRtl)
         );
         assert_eq!(
             record.metadata.requested_target_supports_async_copy,

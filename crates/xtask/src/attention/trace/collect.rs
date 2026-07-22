@@ -247,7 +247,6 @@ pub(super) fn parse_trace_device_backend_field(
     let raw = parse_trace_field(line, field_name)?;
     match raw {
         "host_reference" => Some(DeviceBackend::HostReference),
-        "vortex_simx" => Some(DeviceBackend::VortexSimx),
         "vortex_rtl" => Some(DeviceBackend::VortexRtl),
         "vortex_fpga" => Some(DeviceBackend::VortexFpga),
         _ => {

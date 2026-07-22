@@ -173,7 +173,7 @@ fn emit_mlir_kernel(
     kernel: &VortexKernelFunction,
 ) {
     mlir.push_line(format!(
-        "  llvm.func {}(%{}: {}) attributes {{dso_local, no_unwind, passthrough = [\"vortex-kernel\", [\"frame-pointer\", \"all\"], [\"no-trapping-math\", \"true\"], [\"target-cpu\", \"generic-rv64\"], [\"target-features\", \"+64bit,+a,+d,+f,+m,+relax,+xvortex,+zaamo,+zalrsc,+zicond,+zicsr,+zmmul\"]]}} {{",
+        "  llvm.func {}(%{}: {}) attributes {{dso_local, no_unwind, passthrough = [\"vortex-kernel\", [\"frame-pointer\", \"all\"], [\"no-trapping-math\", \"true\"], [\"target-cpu\", \"generic-rv64\"], [\"target-features\", \"+64bit,+d,+f,+m,+relax,+xvortex,+zicond,+zicsr,+zmmul\"]]}} {{",
         mlir_symbol_ref(&kernel.name),
         kernel.param_name,
         render_mlir_type(&kernel.param_type, module)

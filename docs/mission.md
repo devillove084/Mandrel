@@ -29,7 +29,7 @@ software:
   workload -> schedule -> kernel IR -> MLIR -> LLVM -> RISC-V binary
 
 hardware:
-  design spec -> Vortex configuration -> SimX / RTL / FPGA / netlist
+  design spec -> Vortex configuration -> Verilator RTLSim / FPGA / netlist
 ```
 
 The branches meet at a versioned experiment, not through an imagined LLVM-to-Verilog lowering.
@@ -38,7 +38,7 @@ The initial workload family is attention and KV cache because it exposes computa
 
 ## Current foothold
 
-Today Mandrel executes one dense `attention_prefill_i8` baseline on Vortex SimX. It generates LLVM-dialect MLIR and RISC-V artifacts, launches the `.vxbin`, exact-compares against a Rust reference, prints SimX counter statistics, and writes JSON/CSV results.
+Today Mandrel executes one dense `attention_prefill_i8` baseline through Vortex SystemVerilog RTL using the pinned project-local Verilator RTLSim. It lowers LLVM-dialect MLIR to LLVM IR, an RV64 object, a startup-aware ELF, and `.vxbin`; exact-compares against a Rust reference; prints RTL `PERF` statistics; and writes JSON/CSV results labeled with `rtl_simulation` evidence.
 
 The current kernel is scalar, two-pass, direct-global, and uses no local-memory staging. It is infrastructure evidence, not a production-serving or hardware-performance result.
 
@@ -48,7 +48,7 @@ The current kernel is scalar, two-pass, direct-global, and uses no local-memory 
 2. **Serving semantics before benchmark theater.** Causal behavior, prefill/decode, head structure, GQA/MQA, paged KV, and replay shape must become explicit.
 3. **Hardware facts have identities.** Source revision, resolved configuration, build, compiler target, and execution backend are part of the experiment.
 4. **Legality is not identity.** A kernel may run on a non-identical target; exact target matching and requirement satisfaction are separate contracts.
-5. **Evidence classes never collapse.** Static estimates, SimX, RTL, FPGA, synthesis, and silicon mean different things.
+5. **Evidence classes never collapse.** Static estimates, RTL simulation, FPGA, synthesis, and silicon mean different things.
 6. **LLVM owns target machinery, not model policy.** ISA, ABI, intrinsics, instruction selection, registers, MC support, and scheduling models belong in LLVM; attention/KV schedule policy remains in Mandrel.
 7. **Use upstream hardware before inventing hardware.** Validate Vortex TCU and DXA, then add a narrow RTL primitive only when workload evidence justifies it.
 8. **Experiments are human decisions.** Mandrel generates artifacts and reports; it does not automatically choose baselines, rank research ideas, or prescribe the next design.
@@ -63,7 +63,7 @@ A successful Mandrel study can answer:
 - Was the same semantic workload executed?
 - Did every design point satisfy the same correctness policy?
 - Which source/configuration/binary/netlist identities produced the result?
-- Are metrics static, SimX, RTL, FPGA, synthesis, or silicon evidence?
+- Are metrics static, RTL-simulation, FPGA, synthesis, or silicon evidence?
 - Does a matched software+hardware design beat controlled software-only and hardware-only alternatives?
 - What bottleneck was removed, and what new bottleneck appeared?
 - Can another researcher rebuild the design point and inspect its artifacts?

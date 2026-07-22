@@ -58,7 +58,7 @@ impl GgmlAttentionPrefillRequest {
     }
 
     pub fn to_model_ir(self) -> Option<AttentionOp> {
-        self.to_model_ir_for(DeviceCapabilities::vortex_simx_default())
+        self.to_model_ir_for(DeviceCapabilities::vortex_rtl_default())
     }
 }
 
@@ -72,7 +72,7 @@ pub const fn can_offload_attention_prefill(
 ) -> bool {
     if !matches!(
         caps.backend,
-        DeviceBackend::VortexSimx | DeviceBackend::VortexRtl | DeviceBackend::VortexFpga
+        DeviceBackend::VortexRtl | DeviceBackend::VortexFpga
     ) {
         return false;
     }
@@ -111,9 +111,9 @@ mod tests {
 
         assert!(super::can_offload_attention_prefill(
             request,
-            DeviceCapabilities::vortex_simx_default()
+            DeviceCapabilities::vortex_rtl_default()
         ));
-        let op = match request.to_model_ir_for(DeviceCapabilities::vortex_simx_default()) {
+        let op = match request.to_model_ir_for(DeviceCapabilities::vortex_rtl_default()) {
             Some(op) => op,
             None => panic!("expected model-ir attention op"),
         };

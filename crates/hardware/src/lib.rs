@@ -98,13 +98,13 @@ impl HardwareDesignSpec {
         CompilerTargetSpec::vortex_rv64()
     }
 
-    pub const fn current_vortex_simx_target(self) -> TargetSpec {
+    pub const fn current_vortex_rtl_target(self) -> TargetSpec {
         match self
             .vortex
-            .target_spec("vortex_simx_default", DeviceBackend::VortexSimx)
+            .target_spec("vortex_rtl_default", DeviceBackend::VortexRtl)
         {
             Some(target) => target,
-            None => TargetSpec::vortex_simx_default(),
+            None => TargetSpec::vortex_rtl_default(),
         }
     }
 }
@@ -122,7 +122,7 @@ impl CompilerTargetSpec {
         Self {
             target_triple: "riscv64-unknown-elf",
             cpu: "generic-rv64",
-            features: "+m,+a,+f,+zicsr,+zifencei,+xvortex",
+            features: "+m,+f,+d,+zicsr,+zifencei,+zicond,+xvortex",
             xlen: 64,
         }
     }
@@ -130,7 +130,6 @@ impl CompilerTargetSpec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HardwareRealizationKind {
-    SimxModel,
     RtlSimulation,
     Fpga,
     Synthesis,
@@ -139,7 +138,6 @@ pub enum HardwareRealizationKind {
 impl HardwareRealizationKind {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::SimxModel => "simx_model",
             Self::RtlSimulation => "rtl_simulation",
             Self::Fpga => "fpga",
             Self::Synthesis => "synthesis",
@@ -160,15 +158,15 @@ pub struct RealizedHardwareManifest {
 }
 
 impl RealizedHardwareManifest {
-    pub fn current_vortex_simx(
+    pub fn current_vortex_rtl(
         configuration_identity: impl Into<String>,
         build_identity: impl Into<String>,
     ) -> Self {
         let design = HardwareDesignSpec::current_vortex_default();
-        let realized_target = design.current_vortex_simx_target();
+        let realized_target = design.current_vortex_rtl_target();
         Self {
             design,
-            realization: HardwareRealizationKind::SimxModel,
+            realization: HardwareRealizationKind::RtlSimulation,
             source_repository: String::from(VORTEX_UPSTREAM_URL),
             source_revision: String::from(CURRENT_VORTEX_REVISION),
             configuration_identity: configuration_identity.into(),
@@ -191,30 +189,30 @@ mod tests {
     fn tracked_default_matches_current_vortex_configuration() {
         let parameters = VortexHardwareParameters::current_default();
         let target = parameters
-            .target_spec("vortex_simx_default", DeviceBackend::VortexSimx)
-            .unwrap_or_else(TargetSpec::vortex_simx_default);
+            .target_spec("vortex_rtl_default", DeviceBackend::VortexRtl)
+            .unwrap_or_else(TargetSpec::vortex_rtl_default);
 
         assert_eq!(parameters.clusters, 1);
         assert_eq!(parameters.cores, 1);
         assert_eq!(parameters.dcache_bytes, 16 * 1024);
         assert_eq!(
             target.device_capabilities(),
-            DeviceCapabilities::vortex_simx_default()
+            DeviceCapabilities::vortex_rtl_default()
         );
     }
 
     #[test]
     fn manifest_binds_design_source_config_build_and_target() {
         let manifest =
-            RealizedHardwareManifest::current_vortex_simx("sha256:config", "sha256:simx-build");
+            RealizedHardwareManifest::current_vortex_rtl("sha256:config", "sha256:rtl-build");
 
         assert_eq!(
             manifest.design,
             HardwareDesignSpec::current_vortex_default()
         );
-        assert_eq!(manifest.realization, HardwareRealizationKind::SimxModel);
+        assert_eq!(manifest.realization, HardwareRealizationKind::RtlSimulation);
         assert_eq!(manifest.source_revision, CURRENT_VORTEX_REVISION);
         assert_eq!(manifest.configuration_identity, "sha256:config");
-        assert_eq!(manifest.build_identity, "sha256:simx-build");
+        assert_eq!(manifest.build_identity, "sha256:rtl-build");
     }
 }

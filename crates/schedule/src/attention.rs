@@ -201,9 +201,9 @@ mod tests {
 
     #[test]
     fn vortex_constraints_come_from_device_capabilities() {
-        let constraints = TargetConstraints::vortex_simx_default();
+        let constraints = TargetConstraints::vortex_rtl_default();
 
-        assert_eq!(constraints.target, DeviceBackend::VortexSimx);
+        assert_eq!(constraints.target, DeviceBackend::VortexRtl);
         assert_eq!(constraints.max_workgroup_threads, 16);
         assert_eq!(constraints.preferred_subgroup_width, 4);
         assert_eq!(constraints.local_memory_bytes, 16 * 1024);
@@ -213,7 +213,7 @@ mod tests {
     fn selects_dense_scalar_two_pass_schedule_for_demo_attention() {
         let selection = match select_vortex_attention_prefill_schedule(
             AttentionOp::prefill_i8_demo(),
-            TargetConstraints::vortex_simx_default(),
+            TargetConstraints::vortex_rtl_default(),
         ) {
             Ok(selection) => selection,
             Err(error) => panic!("unexpected schedule error: {error:?}"),

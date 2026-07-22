@@ -13,8 +13,8 @@ use mandrel_vortex_codegen::validate_attention_prefill_i8_plan_abi;
 
 use crate::command::run_checked_capturing_stdout;
 use crate::vortex::{
-    apply_vortex_env, ensure_vortex_runtime_libraries, preferred_vortex_runtime_library,
-    require_file,
+    apply_vortex_env, preferred_vortex_runtime_library, require_file,
+    require_vortex_runtime_libraries,
 };
 use crate::{Result, XtaskError};
 
@@ -31,14 +31,14 @@ use super::{report, trace};
 pub(crate) fn run_vortex_attention_correctness(workspace_root: &Path) -> Result<()> {
     let config = VortexConfig::from_env(workspace_root)?;
     let spec = current_attention_experiment_spec()?;
-    let artifacts = generate_vortex_attention_artifacts(workspace_root, spec, false)?;
-    require_file(&artifacts.vxbin_path, "generated attention vxbin")?;
-    ensure_vortex_runtime_libraries(&config)?;
+    let outputs = generate_vortex_attention_artifacts(workspace_root, spec, false)?;
+    require_file(&outputs.vxbin_path, "generated attention vxbin")?;
+    require_vortex_runtime_libraries(&config)?;
     let runtime = preferred_vortex_runtime_library(&config)?;
 
     println!(
-        "Launching attention runtime correctness through Vortex simx with vxbin: {}",
-        artifacts.vxbin_path.display()
+        "Launching attention runtime correctness through Vortex Verilator RTLSim with vxbin: {}",
+        outputs.vxbin_path.display()
     );
     let exe = env::current_exe()
         .map_err(|error| format!("failed to locate current xtask executable: {error}"))?;
@@ -46,8 +46,8 @@ pub(crate) fn run_vortex_attention_correctness(workspace_root: &Path) -> Result<
     command
         .current_dir(workspace_root)
         .arg("__vortex-run-attention-inner")
-        .arg(&artifacts.vxbin_path)
-        .env("VORTEX_DRIVER", "simx")
+        .arg(&outputs.vxbin_path)
+        .env("VORTEX_DRIVER", "rtlsim")
         .env("MANDREL_VORTEX_RUNTIME_LIB", &runtime)
         .env("MANDREL_VORTEX_RUNTIME_TRACE", "1");
     apply_vortex_env(&mut command, &config)?;
@@ -63,18 +63,18 @@ pub(crate) fn run_vortex_attention_correctness(workspace_root: &Path) -> Result<
     let Some(record) = report.record else {
         return Err("attention run did not produce a structured experiment record".into());
     };
-    let result = report::experiment_result_with_artifacts(record, &artifacts, workspace_root)
+    let result = report::experiment_result_with_outputs(record, &outputs, workspace_root)
         .ok_or_else(|| {
             XtaskError::message("attention trace could not form an experiment result")
         })?;
-    let experiment_path = artifacts.vxbin_path.with_extension("experiment.json");
+    let experiment_path = outputs.vxbin_path.with_extension("experiment.json");
     report::write_experiment_json(&result, record, &experiment_path).map_err(|error| {
         XtaskError::message(format!(
             "failed to write attention experiment result '{}': {error}",
             experiment_path.display()
         ))
     })?;
-    let csv_path = artifacts.vxbin_path.with_extension("experiment.csv");
+    let csv_path = outputs.vxbin_path.with_extension("experiment.csv");
     report::write_experiment_csv(&result, record, &csv_path).map_err(|error| {
         XtaskError::message(format!(
             "failed to write attention experiment CSV '{}': {error}",
@@ -171,14 +171,13 @@ pub(crate) fn run_vortex_attention_correctness_inner(
 
     runtime_step("initializing Vortex backend/runtime")?;
     let vortex_config = VortexConfig::from_env(workspace_root)?;
-    let config =
-        VortexBackendConfig::new().with_kernel_artifact(runtime_launch.symbol, &vxbin_path);
+    let config = VortexBackendConfig::new().with_kernel_image(runtime_launch.symbol, &vxbin_path);
     let mut backend = VortexBackend::new(config)
         .map_err(|error| format!("failed to initialize Vortex backend runtime: {error}"))?;
     let target_caps = backend
         .device_capabilities()
         .map_err(|error| format!("failed to query Vortex target capabilities: {error}"))?;
-    let observed_target = observed_vortex_simx_target(vortex_config.xlen, target_caps)?;
+    let observed_target = observed_vortex_rtl_target(vortex_config.xlen, target_caps)?;
     let target_contract = TargetContract::exact(spec.target, observed_target);
     runtime_step(&format!(
         "requested target name={} backend={} xlen={} max_workgroup_threads={} preferred_subgroup_width={} local_memory_bytes={}",
@@ -274,12 +273,12 @@ pub(crate) fn run_vortex_attention_correctness_inner(
     Ok(())
 }
 
-fn observed_vortex_simx_target(xlen: u32, caps: VortexDeviceCaps) -> Result<TargetSpec> {
+fn observed_vortex_rtl_target(xlen: u32, caps: VortexDeviceCaps) -> Result<TargetSpec> {
     let max_workgroup_threads = caps
         .max_workgroup_threads()
         .ok_or_else(|| "Vortex target max workgroup thread count overflow".to_owned())?;
-    let mut observed = TargetSpec::vortex_simx_default();
-    observed.name = "vortex_simx_runtime_observed";
+    let mut observed = TargetSpec::vortex_rtl_default();
+    observed.name = "vortex_rtl_runtime_observed";
     observed.xlen = xlen;
     observed.max_workgroup_threads = u64_to_u32(
         max_workgroup_threads,

@@ -1,0 +1,10 @@
+[project]
+name = "mandrel-tools"
+version = "0.1.0"
+description = "Project-local Python environment for Mandrel hardware tooling"
+requires-python = "==3.13.13"
+dependencies = []
+
+[tool.uv]
+package = false
+python-preference = "only-managed"

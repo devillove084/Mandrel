@@ -7,7 +7,7 @@
 
 ## Abstract
 
-Large-language-model (LLM) serving has shifted from a pure matrix-multiplication throughput problem to a cross-layer systems problem dominated by key-value (KV) cache storage, page-table indirection, prefill/decode phase imbalance, runtime data movement, scheduling policy, target-specific attention kernels, and observability. This survey reviews recent work on LLM serving, paged KV cache management, attention kernels, KV compression and sparse retrieval, runtime/security mechanisms, compiler and kernel DSL infrastructure, and open accelerator/RISC-V systems. It is written for Mandrel, a workload-driven full-stack codesign laboratory whose current executable spine lowers dense `attention_prefill_i8` to Vortex artifacts, runs it under `simx`, checks correctness, and records trace metrics.
+Large-language-model (LLM) serving has shifted from a pure matrix-multiplication throughput problem to a cross-layer systems problem dominated by key-value (KV) cache storage, page-table indirection, prefill/decode phase imbalance, runtime data movement, scheduling policy, target-specific attention kernels, and observability. This survey reviews recent work on LLM serving, paged KV cache management, attention kernels, KV compression and sparse retrieval, runtime/security mechanisms, compiler and kernel DSL infrastructure, and open accelerator/RISC-V systems. It is written for Mandrel, a workload-driven full-stack codesign laboratory whose current executable spine lowers dense `attention_prefill_i8` through LLVM-dialect MLIR, LLVM IR, an RV64 object, ELF, and `.vxbin`; executes Vortex SystemVerilog with pinned project-local Verilator RTLSim; checks exact correctness; and records RTL `PERF` metrics in JSON/CSV with `rtl_simulation` evidence.
 
 The central finding is that Mandrel should not evolve directly from a dense attention demo into a production serving backend. Instead, it should first become a page-aware, event-aware, target-aware, and metric-driven experiment system. The most important near-term abstractions are `ExperimentSpec`, `ExperimentResult`, `WorkloadSpec`, `TargetSpec`, `MemorySystemSpec`, `RuntimeEvent`, `PagedKvLayoutSpec`, and a policy boundary between attention math and work assignment. These objects would allow Mandrel to compare dense and paged KV layouts, runtime copy policies, target memory assumptions, tiled attention schedules, and future decode work-assignment policies with correctness and trace evidence. The paper also provides notation and metrics for discussing serving systems, paper-reported comparison tables, key-paper deep reads, and Mandrel mapping diagrams.
 
@@ -21,7 +21,7 @@ LLM serving; KV cache; paged attention; prefill/decode disaggregation; attention
 
 LLM inference is increasingly constrained by system effects outside dense GEMM. During **prefill**, models process prompt tokens in parallel and can be compute intensive. During **decode**, each generation step often reads an ever-growing KV cache and can be memory-bandwidth, launch, synchronization, or scheduling limited. Serving systems therefore depend on KV cache allocation, page-table indirection, continuous batching, prefix reuse, prefill/decode scheduling, KV transfer, runtime event handling, and target-specific attention kernels. Modern systems such as vLLM, SGLang, Splitwise, DistServe, Sarathi-Serve, FlashAttention-3, and FlashInfer each optimize different portions of this stack [1]--[8].
 
-Mandrel targets a different but related problem. Rather than building a production CUDA serving framework, Mandrel uses LLM-serving workloads to study open accelerator codesign. Its current path is intentionally narrow: dense `attention_prefill_i8` is represented in Rust IR and schedule metadata, lowered through LLVM-dialect MLIR, compiled into Vortex artifacts, launched under SimX, checked against a host reference, and recorded as a versioned JSON result plus a CSV summary. This creates an executable anchor for researcher-designed hardware/software experiments on an open RISC-V/Vortex target.
+Mandrel targets a different but related problem. Rather than building a production CUDA serving framework, Mandrel uses LLM-serving workloads to study open accelerator codesign. Its current path is intentionally narrow: dense `attention_prefill_i8` is represented in Rust IR and schedule metadata, lowered through LLVM-dialect MLIR and LLVM IR into an RV64 object, ELF, and `.vxbin`, launched through Vortex SystemVerilog with pinned project-local Verilator RTLSim, exact-checked against a host reference, and recorded as versioned JSON plus a CSV summary with `rtl_simulation` evidence. This creates an executable anchor for researcher-designed hardware/software experiments on an open RISC-V/Vortex target.
 
 The question is how such a system should evolve in light of recent LLM-serving literature. A naive direction would be to immediately port a paged attention kernel or expose a framework backend. The literature suggests a different order. Paged attention is no longer just a memory layout; it is a scheduling and runtime problem [1], [10]--[13]. Prefill/decode separation is no longer just a cluster-level deployment trick; it changes KV movement, runtime policy, and service-level objectives [3]--[5], [14]--[22]. KV compression, eviction, and sparse retrieval are no longer isolated model-side approximations; they must be compatible with paged layouts, fused kernels, and correctness policies [33]--[44]. Kernel performance is increasingly target-specific, and abstractions that work well on Hopper, TPU, Ascend, or disaggregated GPU clusters cannot be assumed to transfer to Vortex [6], [7], [11], [46], [47], [51]--[54].
 
@@ -202,10 +202,10 @@ flowchart TD
     A[Attention workload] --> B[Rust model IR and schedule metadata]
     B --> C[Vortex kernel plan and ABI layout validation]
     C --> D[LLVM dialect MLIR]
-    D --> E[Vortex object ELF vxbin]
-    E --> F[Vortex simx runtime launch]
-    F --> G[Host reference correctness]
-    F --> H[PERF counters and runtime events]
+    D --> E[LLVM IR RV64 object ELF vxbin]
+    E --> F[Vortex Verilator RTLSim launch]
+    F --> G[Exact host reference correctness]
+    F --> H[RTL PERF counters and runtime events]
     G --> I[JSON result and CSV row]
     H --> I
 ```
@@ -214,7 +214,7 @@ flowchart TD
 
 The current codebase already contains dense attention metadata and a paged KV placeholder. `AttentionKvLayout::Paged { page_size }` and `AttentionKvCacheMetadata::Paged` exist, but the current Vortex backend rejects paged KV metadata because the ABI and lowering do not support it yet. This is a useful state: Mandrel can represent unsupported future layouts without silently pretending that they run.
 
-The main gap is that several roadmap concepts are still only partial code objects. `mandrel-experiment`, `mandrel-target-ir`, `mandrel-artifact`, and `mandrel-hardware` now provide first-pass experiment, target, artifact, and hardware schemas. The live `vortex-run-attention` path writes a v2 JSON result and one-row CSV summary. Resolved hardware/build identities, artifact digests, a rich `PagedKvLayoutSpec`, paged-KV legality, and structured compute IR still need to be implemented before complex paged decode lowering.
+The main gap is that several roadmap concepts are still only partial code objects. `mandrel-experiment`, `mandrel-target-ir`, and `mandrel-hardware` provide first-pass experiment, target, and hardware schemas, while Vortex build outputs and kernel-image lookup stay in `mandrel-vortex-backend`. The live `vortex-run-attention` path writes a v2 JSON result and one-row CSV summary. Typed software/hardware build manifests, resolved identities, content digests, a rich `PagedKvLayoutSpec`, paged-KV legality, and structured compute IR still need to be implemented before complex paged decode lowering.
 
 ## 6. Taxonomy of the Literature
 
@@ -398,7 +398,7 @@ This section reads the most relevant papers one by one. The goal is not to repro
 
 **Portability caveat.** The exact benchmark suite is serving-kernel oriented and CUDA-centered, but the loop structure is general.
 
-**Mandrel mapping.** This is a strong structural reference for `mandrel-experiment`: `ExperimentSpec -> ArtifactSet -> RuntimeEvidence -> CorrectnessResult -> JSON/CSV report`. Mandrel deliberately stops before automatic experiment selection or deployment substitution.
+**Mandrel mapping.** This is a strong structural reference for `mandrel-experiment`: `ExperimentSpec -> typed build manifests -> RuntimeEvidence -> CorrectnessResult -> JSON/CSV report`. Mandrel deliberately stops before automatic experiment selection or deployment substitution.
 
 ### 8.9 PersistentKV [10]
 
@@ -599,7 +599,8 @@ ExperimentSpec
 
 ExperimentResult
   correctness: CorrectnessResult
-  artifacts: ArtifactSet
+  software_build: BuildManifestRef
+  hardware_realization: BuildManifestRef
   counters: CounterSet
   events: Vec<RuntimeEvent>
   workload_metrics: WorkloadMetrics
@@ -700,7 +701,7 @@ flowchart TD
     P --> T
     Q --> T
     S --> T
-    T --> U[SimX and future RTL correctness]
+    T --> U[Verilator RTLSim exact correctness]
     U --> V[JSON result and CSV summary]
     R --> V
 ```
@@ -789,7 +790,7 @@ flowchart TD
     C --> D{Supported on target}
     D -->|No| E[UnsupportedMetadata report]
     D -->|Yes| F[Generate MLIR and artifacts]
-    F --> G[Run Vortex simx or future target]
+    F --> G[Run Vortex Verilator RTLSim or future target]
     G --> H[Correctness check]
     G --> I[Runtime events and counters]
     H --> J[ExperimentResult]

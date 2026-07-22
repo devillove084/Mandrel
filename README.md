@@ -18,13 +18,14 @@ Mandrel currently has one end-to-end executable baseline:
 - schedule: `dense_scalar_two_pass_4x1x64`;
 - structure: `query_tile=4`, scalar `key_tile=1`, `head_dim_tile=64`;
 - memory: direct global-memory access and `0 B` local memory per workgroup;
-- code path: Rust plan → textual LLVM-dialect MLIR → LLVM IR → RISC-V object → startup-aware ELF → `.vxbin`;
-- execution: Vortex SimX through the Vortex runtime;
+- code path: Rust plan → textual LLVM-dialect MLIR → LLVM IR → RV64 object → startup-aware ELF → `.vxbin`;
+- compatibility gate: final ELF XLEN and ISA attributes must be a subset of the materialized RTL `VX_CFG_EXT_*` capabilities before `.vxbin` packaging;
+- execution: Vortex SystemVerilog RTL through the pinned project-local Verilator RTLSim and Vortex runtime;
 - validation: exact comparison against a Rust host reference;
-- evidence: launch/transfer events and SimX `PERF` instructions, cycles, and IPC;
-- outputs: a versioned JSON result and a one-row CSV summary.
+- evidence: launch/transfer events and RTL `PERF` instructions, cycles, and IPC;
+- outputs: a versioned JSON result and a one-row CSV summary, both labeled with `rtl_simulation` evidence.
 
-This baseline proves the executable spine and correctness contract. It is not yet serving-faithful prefill/decode, paged attention, a structural key-tiled online-softmax kernel, an RTL result, an FPGA measurement, or a PPA result. SimX cycles are simulator observations, not chip performance.
+This baseline proves that the executable spine and correctness contract pass through Vortex RTL end to end. It is not yet serving-faithful prefill/decode, paged attention, a structural key-tiled online-softmax kernel, an FPGA measurement, or a PPA result. Verilator RTLSim cycles are RTL-simulation observations, not FPGA or chip performance.
 
 ## The focused research question
 
@@ -56,7 +57,7 @@ hardware branch:
   hardware design spec
     -> resolved Vortex configuration
     -> generated Verilog configuration
-    -> SimX / RTL simulation / FPGA / synthesized netlist
+    -> Verilator RTLSim / FPGA / synthesized netlist
 
 experiment plane:
   workload + software design + hardware design + toolchain identity
@@ -73,8 +74,8 @@ See [`docs/codesign-architecture.md`](docs/codesign-architecture.md) for the ful
 
 The first codesign study is deliberately conservative:
 
-1. materialize tracked Vortex hardware configurations;
-2. run the same attention baseline through matching SimX and RTL configurations;
+1. preserve the exact-correct Verilator RTLSim attention path as the control;
+2. materialize additional tracked Vortex hardware configurations with matching compiler and RTL identities;
 3. enable and expose existing Vortex TCU and DXA mechanisms;
 4. compare software-only, hardware-only, and matched software+hardware design points;
 5. add formal LLVM support only after helper-call/inline-assembly paths validate semantics;
@@ -98,43 +99,58 @@ Evidence sources remain distinct:
 | Evidence class | Meaning |
 |---|---|
 | Static model | Logical/lowered work and traffic estimates. |
-| SimX observation | Functional simulator counters and runtime events. |
-| RTL simulation | Cycle/event evidence from matching RTL. Planned. |
+| RTL simulation | Instructions, cycles, IPC, and runtime events from the matching SystemVerilog RTL through pinned Verilator RTLSim. Current baseline. |
 | FPGA measurement | Measurements from a versioned bitstream and board setup. Planned. |
 | Synthesis estimate | Timing, area, and power methodology tied to a netlist. Planned. |
 | Silicon measurement | Not currently available. |
 
 ## Quick start
 
-Basic workspace validation:
+The root `Makefile` is the recommended orchestration entry point:
 
 ```sh
-cargo fmt --all -- --check
-cargo check --workspace --all-targets --all-features --locked
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-targets --all-features --locked
-cargo no-std-check
+make help
+make install
+make run
 ```
 
-Inspect and run the current attention path:
+`make install` materializes the complete pinned project-local environment. `make run` regenerates the operator artifacts, checks plan/ABI and ELF/RTL ISA compatibility, launches Vortex SystemVerilog through Verilator RTLSim, exact-compares the output, prints RTL `PERF` counters, and writes JSON/CSV with `rtl_simulation` evidence.
+
+Run setup and the RTL integration gate in one command:
 
 ```sh
+make e2e
+```
+
+Common targets:
+
+| Target | Purpose |
+|---|---|
+| `make install` / `make setup` | Run the complete uv, Verilator, LLVM-Vortex, Vortex, and environment-check flow. |
+| `make setup-python` | Create the frozen uv-managed Python environment. |
+| `make setup-verilator` | Build the pinned project-local Verilator. |
+| `make setup-llvm` | Build or verify LLVM-Vortex and compiler-rt. |
+| `make setup-vortex` | Fetch, patch, and build the Vortex RTLSim runtime. |
+| `make env-check` | Verify all materialized revisions, tools, libraries, and the non-RVC libc multilib. |
+| `make plan` | Print the typed attention launch plan. |
+| `make generate` | Generate and validate MLIR, LLVM IR, object, ELF, and `.vxbin` artifacts. |
+| `make run` / `make profile` | Run exact RTLSim correctness and emit terminal, JSON, and CSV profiles. |
+| `make validate` | Run formatting, workspace check, Clippy, tests, and the RISC-V `no_std` check. |
+| `make verify` | Run the environment check, full Rust validation, and the RTL integration gate. |
+
+The Makefile is intentionally only an orchestration layer. Bash under `scripts/env/` owns the frozen `uv` environment, pinned checkouts, reviewed patches, toolchain and RTLSim builds, and exported environment. Rust `xtask` owns operator artifact generation, typed launch planning, runtime execution, exact correctness, and profile/report emission.
+
+For manual debugging, the underlying commands remain available:
+
+```sh
+./scripts/env/setup.sh all
+source scripts/env/vortex-env.sh
 cargo vortex-plan-attention
 cargo vortex-generate-attention
 cargo vortex-run-attention
 ```
 
-The Vortex commands require the configured Vortex checkout, LLVM toolchain, runtime, and SimX build. Use the setup/status commands when preparing a new environment:
-
-```sh
-cargo vortex-fetch
-cargo vortex-system-tools
-cargo vortex-install
-cargo vortex-env
-cargo vortex-status
-```
-
-The primary integration gate is `cargo vortex-run-attention`: it regenerates the device artifact, validates plan/ABI constraints, launches SimX, exact-compares the output, prints counter statistics, and writes JSON/CSV evidence.
+`make env` prints the activation command because a child `make` process cannot modify its parent shell. `make shell` instead opens an interactive Bash with the project environment already active.
 
 ## Repository map
 
@@ -146,7 +162,6 @@ crates/
   target-ir/          canonical target facts and kernel requirements
   compiler/           workload/schedule to executable Vortex plans
   vortex-codegen/     plan validation, device IR, and MLIR generation
-  artifact/           artifact identities, sets, paths, and registries
   hardware/           hardware design and realization schemas
   vortex-backend/     Vortex runtime, execution, FFI, and host toolchain driver
   experiment/         experiment specs, events, correctness, and results
@@ -165,6 +180,7 @@ experiments/           human-authored study manifests and publication bundles
 docs/                  mission, architecture, roadmap, toolchain notes, survey
 external/              materialized upstream checkouts and builds
 target/mandrel/         generated artifacts and experiment outputs
+Makefile                environment, validation, and RTLSim workflow entry point
 ```
 
 The current `kernel-ir` is still mostly interface/ABI/launch IR; computation is generated directly from compiler plans into an internal Vortex device IR and textual LLVM-dialect MLIR. A structured compute IR and structured MLIR pipeline are roadmap work, not current claims.
@@ -177,7 +193,7 @@ The current `kernel-ir` is still mostly interface/ABI/launch IR; computation is 
 - Separate exact hardware identity from the weaker question “can this kernel legally run?”
 - Keep attention/KV policy in Mandrel; keep ISA/ABI/instruction machinery in LLVM.
 - Validate upstream TCU/DXA before adding new RTL.
-- Do not compare static, SimX, RTL, FPGA, synthesis, and silicon evidence as if they were interchangeable.
+- Do not compare static, RTL-simulation, FPGA, synthesis, and silicon evidence as if they were interchangeable.
 - Do not automate research judgment. Generate evidence that a researcher can inspect and defend.
 
 ## Documentation

@@ -7,7 +7,6 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-mandrel-artifact = { workspace = true, features = ["std"] }
 mandrel-kernel-ir = { workspace = true }
 
 snafu = { workspace = true, features = ["std"] }

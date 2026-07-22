@@ -13,7 +13,6 @@ pub type TensorId = u32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeTarget {
     HostReference,
-    VortexSimx,
     VortexRtl,
     VortexFpga,
 }
@@ -22,7 +21,6 @@ impl RuntimeTarget {
     pub const fn device_backend(self) -> DeviceBackend {
         match self {
             Self::HostReference => DeviceBackend::HostReference,
-            Self::VortexSimx => DeviceBackend::VortexSimx,
             Self::VortexRtl => DeviceBackend::VortexRtl,
             Self::VortexFpga => DeviceBackend::VortexFpga,
         }
@@ -75,7 +73,7 @@ pub const fn example_attention_vortex_plan() -> RuntimePlan<2, 8> {
     );
 
     RuntimePlan {
-        target: RuntimeTarget::VortexSimx,
+        target: RuntimeTarget::VortexRtl,
         command_buffer: CommandBuffer::new([DeviceCommand::Launch(launch), DeviceCommand::Fence]),
     }
 }
@@ -1152,15 +1150,15 @@ mod tests {
     fn example_plan_targets_vortex_attention_prefill() {
         let plan = example_attention_vortex_plan();
 
-        assert_eq!(plan.target.device_backend(), DeviceBackend::VortexSimx);
+        assert_eq!(plan.target.device_backend(), DeviceBackend::VortexRtl);
         assert_eq!(plan.command_buffer.len(), 2);
         assert!(matches!(
             plan.command_buffer.commands[1],
             DeviceCommand::Fence
         ));
         assert_eq!(
-            RuntimeTarget::VortexSimx.device_backend(),
-            DeviceBackend::VortexSimx
+            RuntimeTarget::VortexRtl.device_backend(),
+            DeviceBackend::VortexRtl
         );
     }
 

@@ -14,8 +14,9 @@ flowchart TD
     F --> G[startup probe ELF]
     G --> H[vx_start.o]
     H --> I[Vortex ELF]
-    I --> J[vxbin package]
-    J --> K[simx runtime launch]
+    I --> P[ELF and RTL ISA compatibility gate]
+    P --> J[vxbin package]
+    J --> K[Verilator RTLSim launch]
     K --> L[readback and host compare]
 ```
 
@@ -27,6 +28,7 @@ The local Vortex LLVM fork is expected to provide:
 - `llvm-objdump`
 - `llvm-objcopy`
 - `llvm-nm`
+- `llvm-readelf`
 
 Default local path:
 
@@ -119,10 +121,13 @@ The ELF link uses the official Vortex KMU startup wrapper and runtime pieces:
 - `libvortex2.a`;
 - Vortex rv64 `libm`/`libc`;
 - `libclang_rt.builtins-riscv64.a`;
-- `STARTUP_ADDR=0x80000000`;
+- non-executed startup-probe `STARTUP_ADDR=0x40000000`, keeping weak address-zero libc symbols within the RISC-V medany range;
+- final executable `STARTUP_ADDR=0x180000000`, matching the upstream Vortex RV64 layout;
 - `--undefined=__vx_kentry_attention_prefill_i8` so `--gc-sections` does not discard the runtime entry symbol.
 
-These details are part of the correctness contract. Removing the startup object or changing the startup address can produce either a stuck launch or relocation failures.
+After the final link, Mandrel reads the ELF RISC-V build attributes with `llvm-readelf -A` and compares XLEN plus `M/A/F/D/C/V/Zicond` requirements against the resolved `VX_CFG_EXT_*_ENABLED` flags. The ELF may use a subset of RTL capabilities, but `.vxbin` packaging is rejected if it requires an extension disabled by the materialized RTL or omits `xvortex`.
+
+These details are part of the correctness contract. Removing the startup object, changing the startup address, or bypassing the ISA compatibility gate can produce a stuck launch, relocation failures, or invalid RTL instruction decoding.
 
 ## LLVM fork policy
 

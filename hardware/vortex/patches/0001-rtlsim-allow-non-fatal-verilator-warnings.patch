@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mandrel Project <mandrel@example.invalid>
+Date: Wed, 22 Jul 2026 00:00:00 +0000
+Subject: [PATCH] rtlsim: allow non-fatal Verilator warnings
+
+Verilator 5.050 reports MULTIDRIVEN warnings for the existing shift and
+pipe register implementations. Keep reporting all warnings, but do not
+abort RTLSim generation on warnings. This option belongs to VL_FLAGS so
+it cannot leak into LLVM-Vortex device compilation through CONFIGS.
+
+Pinned Vortex revision: c992f3f35fa17b83dcc83648a5ac4014b0ea0ac6
+Hardware variable: RTLSim tool compatibility only; no RTL behavior change.
+Compiler/ISA exposure: none.
+Synthesis impact: none.
+---
+ sim/rtlsim/Makefile | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/sim/rtlsim/Makefile b/sim/rtlsim/Makefile
+index 34d638b..716cbcb 100644
+--- a/sim/rtlsim/Makefile
++++ b/sim/rtlsim/Makefile
+@@ -118,5 +118,6 @@ TOP = rtlsim_shim
+ VL_FLAGS = --exe
+ VL_FLAGS += --language 1800-2012 --assert -Wall -Wpedantic
++VL_FLAGS += -Wno-fatal
+ VL_FLAGS += -Wno-DECLFILENAME -Wno-REDEFMACRO
+ VL_FLAGS += --x-initial unique --x-assign unique
+ VL_FLAGS += verilator.vlt

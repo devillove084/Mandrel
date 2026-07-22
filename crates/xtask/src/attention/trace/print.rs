@@ -104,11 +104,11 @@ pub(super) fn print_attention_runtime_trace_record(record: AttentionRuntimeTrace
         summary.launch.kernel_symbol
     );
     println!(
-        "  {:>16}      instructions        # SimX PERF",
+        "  {:>16}      instructions        # Verilator RTL counter",
         format_optional_u64(summary.counters.instructions)
     );
     println!(
-        "  {:>16}      cycles              # SimX PERF",
+        "  {:>16}      cycles              # Verilator RTL counter",
         format_optional_u64(summary.counters.cycles)
     );
     println!(
@@ -159,7 +159,6 @@ fn print_attention_experiment_result(result: &ExperimentResult) {
 pub(super) fn format_optional_device_backend(value: Option<DeviceBackend>) -> &'static str {
     match value {
         Some(DeviceBackend::HostReference) => "host_reference",
-        Some(DeviceBackend::VortexSimx) => "vortex_simx",
         Some(DeviceBackend::VortexRtl) => "vortex_rtl",
         Some(DeviceBackend::VortexFpga) => "vortex_fpga",
         None => "<missing>",

@@ -169,7 +169,7 @@
         <text x="892" y="657" class="nodeTitle">Hardware Realizations</text>
         <text x="892" y="685" class="nodeText">matching config + build identity</text>
         <rect x="1176" y="646" width="70" height="42" rx="13" fill="#a855f7" fill-opacity="0.18" stroke="#d8b4fe" stroke-opacity="0.55"/>
-        <text x="1211" y="672" text-anchor="middle" class="chip">SimX</text>
+        <text x="1211" y="672" text-anchor="middle" class="chip">RTLSim</text>
         <rect x="1254" y="646" width="70" height="42" rx="13" fill="#a855f7" fill-opacity="0.18" stroke="#d8b4fe" stroke-opacity="0.55"/>
         <text x="1289" y="672" text-anchor="middle" class="chip">RTL</text>
         <rect x="1332" y="646" width="70" height="42" rx="13" fill="#be185d" fill-opacity="0.2" stroke="#fda4af" stroke-opacity="0.55"/>

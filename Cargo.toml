@@ -9,7 +9,6 @@ rust-version.workspace = true
 
 [workspace]
 members = [
-    "crates/artifact",
     "crates/compiler",
     "crates/core",
     "crates/device",
@@ -37,7 +36,6 @@ publish = false
 rust-version = "1.85"
 
 [workspace.dependencies]
-mandrel-artifact = { path = "crates/artifact", default-features = false }
 mandrel-compiler = { path = "crates/compiler", default-features = false }
 mandrel-core = { path = "crates/core", default-features = false }
 mandrel-device = { path = "crates/device", default-features = false }

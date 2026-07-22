@@ -2,7 +2,7 @@
 
 Mandrel has one experiment plane and two artifact-producing branches. The software branch turns a serving workload into an executable RISC-V binary. The hardware branch turns architectural design variables into a resolved Vortex realization. They meet at compatibility, execution, correctness, and evidence collection.
 
-This document distinguishes **target architecture** from **implemented architecture**. Today only the dense attention software path through Vortex SimX is executable end to end.
+This document distinguishes **target architecture** from **implemented architecture**. Today the dense attention path is executable end to end through Vortex SystemVerilog RTL using the pinned project-local Verilator RTLSim.
 
 ![Mandrel serving-driven RISC-V inference codesign architecture](assets/mandrel-codesign-architecture.svg)
 
@@ -26,17 +26,14 @@ flowchart TD
     M --> L[LLVM and Vortex target]
     L --> B[RISC-V object ELF vxbin]
 
-    RHC --> SX[SimX model]
-    RHC --> RTL[RTL simulation]
+    RHC --> RTL[Verilator RTLSim]
     RHC --> FPGA[FPGA realization]
     RHC --> SYN[Synthesis and netlist]
 
-    B --> SX
     B --> RTL
     B --> FPGA
 
-    SX --> EV[Evidence bundle]
-    RTL --> EV
+    RTL --> EV[Evidence bundle]
     FPGA --> EV
     SYN --> EV
     P --> EV
@@ -47,6 +44,8 @@ flowchart TD
 ```
 
 Mandrel does not automatically turn a report into a new design. Researchers choose hypotheses, controls, and the next experiment.
+
+The automation boundary is deliberate: Bash under `scripts/env/` owns `uv`, pinned checkouts, patch application, toolchain/RTLSim builds, and environment export; Rust `xtask` owns operator artifacts, launch planning, runtime execution, exact correctness, and profiling/reporting.
 
 ## 2. Software branch
 
@@ -132,7 +131,7 @@ Target flow:
 HardwareDesignSpec
   -> resolved Vortex configuration
   -> generated VX_config.vh / VX_config.h
-  -> SimX / RTL / FPGA / synthesis realization
+  -> Verilator RTLSim / FPGA / synthesis realization
   -> RealizedHardwareManifest
 ```
 
@@ -178,8 +177,7 @@ A realized manifest binds:
 
 | Kind | Purpose | Evidence boundary |
 |---|---|---|
-| SimX model | Fast functional execution and software bring-up | Simulator counters, not hardware timing. |
-| RTL simulation | Cycle/handshake behavior of matching RTL | RTL evidence, potentially slow and workload-limited. |
+| Verilator RTLSim | Execute the matching SystemVerilog RTL and collect cycle/event behavior | `rtl_simulation` evidence; potentially slow and workload-limited, and not FPGA timing. |
 | FPGA | Realized clocked implementation | Board/bitstream/toolchain-specific measurement. |
 | Synthesis | Timing/area/power/netlist studies | Tool/constraint-dependent estimate, not silicon. |
 
@@ -201,7 +199,6 @@ Current tracked defaults include one cluster/core, four warps/core, four threads
 
 - RTL: `external/vortex/hw/rtl/tcu/`
 - core integration: `VX_decode.sv`, `VX_execute.sv`, `VX_gpu_pkg.sv`
-- SimX model: `external/vortex/sim/simx/tcu/`
 - software header: `external/vortex/sw/kernel/include/vx_tensor.h`
 
 The upstream TCU supports multiple WMMA/WGMMA and low-precision modes. Mandrel should not invent a replacement before testing how attention schedules map to it.
@@ -209,7 +206,6 @@ The upstream TCU supports multiple WMMA/WGMMA and low-precision modes. Mandrel s
 ### DXA asynchronous copy
 
 - RTL: `external/vortex/hw/rtl/dxa/`
-- SimX model: `external/vortex/sim/simx/dxa/`
 - kernel/runtime headers: `vx_dxa.h`, `dxa.h`
 
 DXA supports tiled GMEM→LMEM movement, multicast, transpose, barriers, and counters. It is the natural first mechanism for testing explicit K/V staging and overlap.
@@ -242,7 +238,7 @@ What was actually built or materialized:
 - resolved source revision;
 - canonical Vortex configuration;
 - generated headers;
-- SimX/RTL/FPGA/synthesis build identity;
+- Verilator RTLSim/FPGA/synthesis build identity;
 - derived target capabilities.
 
 ### Observed
@@ -258,20 +254,20 @@ Two comparisons are required:
 
 1. **Exact identity compatibility** — requested and realized/observed target facts match the claimed design point.
 2. **Kernel requirement compatibility** — the target has enough XLEN, threads, local memory, arithmetic, TCU, DXA, and other operations to execute the kernel legally.
+3. **Binary/RTL ISA compatibility** — final ELF build attributes must not require `M/A/F/D/C/V/Zicond` extensions disabled by the resolved RTL configuration, and must declare `xvortex`, before `.vxbin` packaging.
 
-A larger target can satisfy a kernel without being the exact requested target. Mandrel records both facts instead of conflating them.
+A larger target can satisfy a kernel without being the exact requested target. Mandrel records these facts instead of conflating them.
 
-## 6. Artifact and provenance model
+## 6. Build identity and provenance model
 
-An artifact reference contains:
+Mandrel does not use one global artifact registry. Operational build paths and runtime kernel-image lookup belong to the backend that consumes them; experiment reports currently retain only lightweight references to emitted MLIR, LLVM IR, object, ELF, and `.vxbin` files.
 
-- kind;
-- path or URI;
-- digest algorithm and content identity when collected.
+The target provenance model uses two typed manifests:
 
-Software artifact kinds include kernel IR, MLIR, LLVM IR, object, ELF, and `.vxbin`. Hardware kinds include design spec, resolved config, RTL manifest, bitstream, netlist, and synthesis report.
+- a software-build manifest binding compiler target, toolchain identity, commands, and generated kernel outputs;
+- a hardware-realization manifest binding design input, resolved configuration, source and patch identities, generated headers, build tools, and RTLSim/FPGA/synthesis outputs.
 
-The current executable path writes path references for MLIR, LLVM IR, object, ELF, and `.vxbin`. Content hashing and full build provenance are the next schema milestone.
+An experiment references those manifest identities and the image actually executed. Transient files such as startup probes remain compiler-build details rather than flat top-level experiment artifacts. Content hashing and live manifest binding are the next schema milestone.
 
 ## 7. Experiment and report model
 
@@ -333,11 +329,11 @@ The first hardware/software study should test existing mechanisms, not a new att
 
 - same semantic workload and correctness policy;
 - explicit unsupported outcomes for illegal software/hardware pairs;
-- SimX and RTL parity before hardware-performance claims;
+- exact correctness through the matching Verilator RTLSim configuration before hardware-performance claims;
 - instruction/event/counter attribution;
 - generated config and binary identities;
 - synthesis impact for enabled hardware;
-- no comparison of SimX cycles to synthesis timing as if they were one metric.
+- no comparison of RTL-simulation cycles to synthesis timing as if they were one metric.
 
 A 2×2 table is the minimum design skeleton for an interaction claim. If one cell is illegal, record it as unsupported and either provide a controlled fallback/emulation for a four-point estimate or limit the claim accordingly.
 
@@ -350,7 +346,7 @@ A Mandrel-specific primitive is selected only after TCU/DXA studies isolate a re
 - a KV gather/layout primitive;
 - a narrow synchronization/movement operation.
 
-Every new primitive requires SimX, RTL, compiler exposure, capability/requirement checks, correctness, counters, and synthesis evidence. A standalone full attention accelerator is not the first step.
+Every new primitive requires a SystemVerilog RTL implementation exercised by Verilator RTLSim, compiler exposure, capability/requirement checks, exact correctness, counters, and synthesis evidence. A standalone full attention accelerator is not the first step.
 
 ## 10. Anti-goals and novelty language
 
@@ -362,7 +358,7 @@ The defensible research gap is the conjunction Mandrel is trying to make reprodu
 - an open RISC-V GPGPU;
 - generated compiler artifacts;
 - parameterized RTL and chip configurations;
-- SimX, RTL, FPGA, and PPA evidence;
+- Verilator RTLSim, FPGA, and PPA evidence;
 - runtime events and exact correctness;
 - unified software/hardware ablations.
 

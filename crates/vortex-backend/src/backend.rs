@@ -10,29 +10,25 @@ use crate::executor::{KernelCacheKey, VortexExecutor, VortexLaunchDims, VortexLa
 use crate::vortex2::{
     Device, Event, Queue, Runtime, VX_MEM_READ, VX_MEM_WRITE, VortexDeviceCaps, VortexError,
 };
-use mandrel_artifact::VortexArtifactRegistry;
 
 pub type Result<T> = std::result::Result<T, VortexBackendError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VortexBackendConfig {
     pub device_index: u32,
-    pub artifacts: VortexArtifactRegistry,
+    kernel_images: Vec<(KernelSymbol, PathBuf)>,
 }
 
 impl VortexBackendConfig {
     pub const fn new() -> Self {
         Self {
             device_index: 0,
-            artifacts: VortexArtifactRegistry::new(),
+            kernel_images: Vec::new(),
         }
     }
 
-    pub fn from_kernel_artifact(symbol: KernelSymbol, vxbin: impl Into<PathBuf>) -> Self {
-        Self {
-            device_index: 0,
-            artifacts: VortexArtifactRegistry::new().with_kernel_artifact(symbol, vxbin),
-        }
+    pub fn from_kernel_image(symbol: KernelSymbol, vxbin: impl Into<PathBuf>) -> Self {
+        Self::new().with_kernel_image(symbol, vxbin)
     }
 
     pub const fn with_device_index(mut self, device_index: u32) -> Self {
@@ -40,13 +36,25 @@ impl VortexBackendConfig {
         self
     }
 
-    pub fn with_kernel_artifact(mut self, symbol: KernelSymbol, vxbin: impl Into<PathBuf>) -> Self {
-        self.artifacts.insert_kernel_artifact(symbol, vxbin);
+    pub fn with_kernel_image(mut self, symbol: KernelSymbol, vxbin: impl Into<PathBuf>) -> Self {
+        let vxbin = vxbin.into();
+        if let Some(index) = self
+            .kernel_images
+            .iter()
+            .position(|(entry_symbol, _)| entry_symbol == &symbol)
+        {
+            self.kernel_images[index].1 = vxbin;
+        } else {
+            self.kernel_images.push((symbol, vxbin));
+        }
         self
     }
 
-    pub fn kernel_artifact(&self, symbol: KernelSymbol) -> Option<&Path> {
-        self.artifacts.kernel_artifact(symbol)
+    pub fn kernel_image(&self, symbol: KernelSymbol) -> Option<&Path> {
+        self.kernel_images
+            .iter()
+            .find(|(entry_symbol, _)| entry_symbol == &symbol)
+            .map(|(_, vxbin)| vxbin.as_path())
     }
 }
 
@@ -97,10 +105,10 @@ pub enum VortexBackendError {
     #[snafu(transparent)]
     Vortex { source: VortexError },
     #[snafu(display(
-        "no Vortex vxbin artifact configured for kernel {}",
+        "no Vortex vxbin image configured for kernel {}",
         symbol.as_str()
     ))]
-    MissingKernelArtifact { symbol: KernelSymbol },
+    MissingKernelImage { symbol: KernelSymbol },
     #[snafu(display("invalid Vortex launch: {message}"))]
     InvalidLaunch { message: String },
     #[snafu(display("internal Vortex backend error: {message}"))]
@@ -243,8 +251,8 @@ impl VortexBackend {
         let kernel_symbol = launch.symbol.as_str();
         let kernel_path = self
             .config
-            .kernel_artifact(launch.symbol)
-            .ok_or(VortexBackendError::MissingKernelArtifact {
+            .kernel_image(launch.symbol)
+            .ok_or(VortexBackendError::MissingKernelImage {
                 symbol: launch.symbol,
             })?
             .to_path_buf();
@@ -528,28 +536,39 @@ mod tests {
     }
 
     #[test]
-    fn backend_config_defaults_to_device_zero_without_default_artifacts() {
+    fn backend_config_defaults_to_device_zero_without_default_images() {
         let config = VortexBackendConfig::new();
 
         assert_eq!(config.device_index, 0);
-        assert!(config.artifacts.is_empty());
         assert!(
             config
-                .kernel_artifact(KernelSymbol::AttentionPrefillI8)
+                .kernel_image(KernelSymbol::AttentionPrefillI8)
                 .is_none()
         );
     }
 
     #[test]
-    fn backend_config_registers_kernel_artifacts() {
-        let config = VortexBackendConfig::new().with_kernel_artifact(
+    fn backend_config_registers_kernel_images() {
+        let config = VortexBackendConfig::from_kernel_image(
             KernelSymbol::AttentionPrefillI8,
             "target/vortex/attention_prefill_i8/kernel.vxbin",
         );
 
         assert_eq!(
-            config.kernel_artifact(KernelSymbol::AttentionPrefillI8),
+            config.kernel_image(KernelSymbol::AttentionPrefillI8),
             Some(Path::new("target/vortex/attention_prefill_i8/kernel.vxbin"))
+        );
+    }
+
+    #[test]
+    fn backend_config_replaces_existing_kernel_image() {
+        let config = VortexBackendConfig::new()
+            .with_kernel_image(KernelSymbol::AttentionPrefillI8, "old.vxbin")
+            .with_kernel_image(KernelSymbol::AttentionPrefillI8, "new.vxbin");
+
+        assert_eq!(
+            config.kernel_image(KernelSymbol::AttentionPrefillI8),
+            Some(Path::new("new.vxbin"))
         );
     }
 
@@ -578,8 +597,8 @@ mod tests {
     }
 
     #[test]
-    fn launch_validation_accepts_current_simx_attention_shape() {
-        let caps = simx_caps();
+    fn launch_validation_accepts_current_rtl_attention_shape() {
+        let caps = rtl_caps();
         let dims = VortexLaunchDims::new([16, 1, 1], [4, 4, 1], 0);
 
         assert!(validate_launch_dims_against_caps(dims, caps).is_ok());
@@ -587,7 +606,7 @@ mod tests {
 
     #[test]
     fn launch_validation_rejects_oversized_workgroup() {
-        let caps = simx_caps();
+        let caps = rtl_caps();
         let dims = VortexLaunchDims::new([2, 2, 1], [16, 16, 1], 1024);
         let error = match validate_launch_dims_against_caps(dims, caps) {
             Ok(()) => panic!("expected oversized workgroup to be rejected"),
@@ -603,7 +622,7 @@ mod tests {
         }
     }
 
-    fn simx_caps() -> VortexDeviceCaps {
+    fn rtl_caps() -> VortexDeviceCaps {
         VortexDeviceCaps {
             threads_per_warp: 4,
             warps_per_core: 4,

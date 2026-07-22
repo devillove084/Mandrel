@@ -6,7 +6,7 @@ Each future patch series must identify:
 
 - the Vortex revision from `../source.lock.toml`;
 - the hardware design variable it implements;
-- matching SimX and RTL behavior;
+- SystemVerilog behavior exercised by Verilator RTLSim, plus any FPGA or synthesis implications;
 - compiler/ISA exposure, if any;
 - correctness tests and synthesis impact;
 - the experiment manifests that use it.

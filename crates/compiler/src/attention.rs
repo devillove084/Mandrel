@@ -97,7 +97,7 @@ pub struct AttentionPrefillPlanMetadata {
 pub fn compile_vortex_attention_prefill_kernel(
     op: AttentionOp,
 ) -> Result<VortexAttentionPrefillPlan, CompileError> {
-    compile_vortex_attention_prefill_kernel_for_target(op, TargetConstraints::vortex_simx_default())
+    compile_vortex_attention_prefill_kernel_for_target(op, TargetConstraints::vortex_rtl_default())
 }
 
 pub fn compile_vortex_attention_prefill_kernel_for_target(
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn target_constraints_participate_in_schedule_selection() {
-        let mut constraints = TargetConstraints::vortex_simx_default();
+        let mut constraints = TargetConstraints::vortex_rtl_default();
         constraints.max_workgroup_threads = 1;
 
         let result = compile_vortex_attention_prefill_kernel_for_target(

@@ -244,13 +244,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mandrel-artifact"
-version = "0.1.0"
-dependencies = [
- "mandrel-kernel-ir",
-]
-
-[[package]]
 name = "mandrel-compiler"
 version = "0.1.0"
 dependencies = [
@@ -279,7 +272,6 @@ dependencies = [
 name = "mandrel-experiment"
 version = "0.1.0"
 dependencies = [
- "mandrel-artifact",
  "mandrel-device",
  "mandrel-hardware",
  "mandrel-profiler",
@@ -365,7 +357,6 @@ version = "0.1.0"
 name = "mandrel-vortex-backend"
 version = "0.1.0"
 dependencies = [
- "mandrel-artifact",
  "mandrel-compiler",
  "mandrel-kernel-ir",
  "mandrel-model-ir",
@@ -723,7 +714,6 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "clap",
- "mandrel-artifact",
  "mandrel-compiler",
  "mandrel-experiment",
  "mandrel-hardware",

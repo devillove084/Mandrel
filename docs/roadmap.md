@@ -2,7 +2,7 @@
 
 Mandrel's roadmap is organized around **evidence gates**, not crate count or kernel count. A phase is complete only when its design variables, artifacts, correctness, provenance, backend, and evidence class are captured by a reproducible experiment.
 
-The current anchor is one exact-correct dense attention baseline on Vortex SimX. The next objective is to make software and hardware design points refer to the same tracked Vortex configuration, then progressively strengthen software semantics and hardware evidence.
+The current anchor is one exact-correct dense attention baseline running Vortex SystemVerilog RTL through the pinned project-local Verilator RTLSim. The next objective is to bind that executable control to complete configuration/build identities, then progressively strengthen software semantics and the FPGA/synthesis evidence ladder.
 
 ## Operating constraint
 
@@ -18,9 +18,11 @@ The current anchor is one exact-correct dense attention baseline on Vortex SimX.
 
 Mandrel does not maintain an automatic history/delta feedback loop. Researchers define comparisons and assemble study-level reports explicitly.
 
+Bash under `scripts/env/` owns `uv`, checkouts, patching, builds, and environment export. Rust `xtask` owns operator artifact generation, launch planning, runtime execution, exact correctness, and profiling/reporting.
+
 ## Phase 0 — Frozen reproducible baseline
 
-**Status: implemented for Vortex SimX.**
+**Status: implemented for Vortex SystemVerilog through Verilator RTLSim.**
 
 Baseline:
 
@@ -30,16 +32,17 @@ Baseline:
 - two-pass stable softmax;
 - direct global-memory Q/K/V/O accesses;
 - `0 B` local memory per workgroup;
-- textual LLVM-dialect MLIR;
-- Vortex object, startup-aware ELF, and `.vxbin`;
+- textual LLVM-dialect MLIR → LLVM IR → RV64 object → startup-aware ELF → `.vxbin`;
+- Vortex SystemVerilog execution through the pinned project-local Verilator RTLSim;
 - exact Rust reference comparison;
-- SimX instructions/cycles/IPC and runtime transfer events.
+- RTL `PERF` instructions/cycles/IPC and runtime transfer events;
+- JSON/CSV output labeled with `rtl_simulation` evidence.
 
 Exit criteria:
 
 - default and shape-override smokes pass exactly;
-- logical work, lowered work, static traffic, and SimX counters remain distinct;
-- generated reports state that SimX is not RTL/FPGA/silicon evidence.
+- logical work, lowered work, static traffic, and RTL counters remain distinct;
+- generated reports identify the baseline as `rtl_simulation`, not FPGA or silicon evidence.
 
 ## Phase 1 — Canonical target, artifact, and hardware schemas
 
@@ -48,7 +51,8 @@ Exit criteria:
 Delivered boundaries:
 
 - `mandrel-target-ir` owns backend/capability/target contracts, target constraints, operation capabilities, and kernel requirements;
-- `mandrel-artifact` owns artifact kind, path, digest identity, sets, Vortex path bundles, and runtime artifact registry;
+- `mandrel-experiment` owns the current lightweight software-output references used by reports;
+- `mandrel-vortex-backend` owns Vortex build-output paths and runtime kernel-image lookup;
 - `mandrel-hardware` owns Vortex hardware parameters, compiler target, realization kind, and realized hardware manifest;
 - `mandrel-vortex-codegen` is separate from the Vortex runtime backend;
 - `hardware/vortex/source.lock.toml` pins Vortex and LLVM-Vortex sources;
@@ -57,14 +61,16 @@ Delivered boundaries:
 
 Remaining exit criteria:
 
-- compute content digests for emitted artifacts;
+- replace the current lightweight output list with typed software-build and hardware-realization manifests carrying content identities;
 - bind resolved config and build identities into the live result instead of placeholder strings;
 - derive all compiler-facing target facts from the materialized Vortex configuration;
 - represent compile/runtime/correctness failures in the same result schema.
 
 ## Phase 2 — Hardware materialization and evidence ladder
 
-Build the hardware branch without changing operator semantics first.
+**Status: the pinned Verilator RTLSim baseline is implemented; complete configuration provenance, synthesis, and FPGA rungs remain.**
+
+Extend the hardware branch without changing operator semantics first.
 
 Work:
 
@@ -73,15 +79,15 @@ Work:
 3. Capture generated `VX_config.vh` and `VX_config.h` as artifacts.
 4. Record source SHA, config digest, build command/environment, and tool versions.
 5. Derive `TargetSpec` from the resolved configuration.
-6. Run the same binary/config pair through SimX and RTLSim.
+6. Keep the same binary/config pair exact-correct through pinned Verilator RTLSim as configuration materialization evolves.
 7. Add Yosys synthesis artifact and report collection.
-8. Add FPGA realization only after SimX/RTL correctness parity.
+8. Add FPGA realization only after matching RTL correctness is preserved.
 
 Exit criteria:
 
 - requested, realized, and observed target facts are all recorded;
 - target drift rejects an experiment before performance evidence is accepted;
-- the dense baseline exact-passes on SimX and matching RTL;
+- the dense baseline exact-passes on the matching SystemVerilog RTL through Verilator RTLSim;
 - synthesis reports are labeled as estimates and tied to constraints/netlist identity.
 
 ## Phase 3 — Serving-faithful dense software baseline
@@ -118,7 +124,7 @@ Use existing upstream hardware before adding new RTL.
 - begin with helper calls or inline assembly;
 - validate i8 and selected low-precision types;
 - expose capability/requirement gates;
-- collect TCU counters in SimX and RTL;
+- collect TCU counters from Verilator RTLSim;
 - compare scalar and TCU-aware software on controlled hardware configurations.
 
 ### DXA track
@@ -131,7 +137,7 @@ Use existing upstream hardware before adding new RTL.
 
 Exit criteria:
 
-- SimX and RTL agree on correctness and instruction/event semantics;
+- Verilator RTLSim preserves exact host-reference correctness and exposes the expected instruction/event semantics;
 - software requesting TCU/DXA cannot silently run on hardware without the feature;
 - hardware-only, software-only, and matched designs are all explicitly represented;
 - performance claims identify whether the gain came from compute, movement, overlap, or configuration.
@@ -163,7 +169,7 @@ Exit criteria:
 - generated kernels no longer require opaque inline `.insn` for the selected path;
 - unsupported features fail with precise compiler diagnostics;
 - LLVM artifacts are reproducible against the pinned fork revision;
-- SimX/RTL correctness remains exact.
+- Verilator RTLSim correctness remains exact.
 
 ## Phase 6 — First Mandrel-specific RTL primitive
 
@@ -180,8 +186,7 @@ Required implementation surface:
 
 - ISA/encoding or memory-mapped contract;
 - Vortex decode/execute integration;
-- SimX functional model;
-- RTL implementation and counters;
+- SystemVerilog RTL implementation and counters exercised through Verilator RTLSim;
 - compiler exposure;
 - requirement/capability representation;
 - correctness tests;
@@ -270,4 +275,4 @@ cargo vortex-generate-attention
 cargo vortex-run-attention
 ```
 
-Future hardware gates add configuration materialization, RTLSim parity, synthesis checks, and FPGA tests without weakening the current SimX exact-correct gate.
+Future hardware gates extend the current Verilator RTLSim exact-correct gate with complete configuration/build identity, synthesis checks, and FPGA tests.

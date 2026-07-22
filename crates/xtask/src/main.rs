@@ -37,16 +37,6 @@ fn run() -> Result<()> {
     tracing::info!(command = command_name, root = %workspace_root.display(), "starting xtask command");
 
     match command {
-        XtaskCommand::VortexFetch => vortex::fetch_vortex(&workspace_root)?,
-        XtaskCommand::VortexSystemTools => {
-            vortex::prepare_and_print_vortex_system_tools(&workspace_root)?
-        }
-        XtaskCommand::VortexToolchainSource => {
-            vortex::install_vortex_source_toolchain(&workspace_root)?
-        }
-        XtaskCommand::VortexInstall => vortex::install_vortex(&workspace_root)?,
-        XtaskCommand::VortexEnv => vortex::write_and_print_vortex_env(&workspace_root)?,
-        XtaskCommand::VortexStatus => vortex::print_vortex_status(&workspace_root)?,
         XtaskCommand::VortexPlanAttention => attention::print_attention_prefill_plan()?,
         XtaskCommand::MoeFetchTinyMixtral => moe::fetch_tiny_mixtral(&workspace_root)?,
         XtaskCommand::MoeRunReference { hf_model_dir } => {
@@ -65,7 +55,6 @@ fn run() -> Result<()> {
         XtaskCommand::VortexRunAttentionInner { vxbin } => {
             attention::run_vortex_attention_correctness_inner(&workspace_root, vxbin)?
         }
-        XtaskCommand::VortexRunVecadd => vortex::run_vortex_vecadd(&workspace_root)?,
     }
 
     Ok(())

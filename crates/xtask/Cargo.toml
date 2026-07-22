@@ -12,7 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
-mandrel-artifact = { workspace = true, features = ["std"] }
 mandrel-compiler = { workspace = true }
 mandrel-experiment = { workspace = true }
 mandrel-hardware = { workspace = true }

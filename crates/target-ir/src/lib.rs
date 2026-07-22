@@ -4,7 +4,6 @@
 #[repr(u8)]
 pub enum DeviceBackend {
     HostReference,
-    VortexSimx,
     VortexRtl,
     VortexFpga,
 }
@@ -13,7 +12,6 @@ impl DeviceBackend {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::HostReference => "host_reference",
-            Self::VortexSimx => "vortex_simx",
             Self::VortexRtl => "vortex_rtl",
             Self::VortexFpga => "vortex_fpga",
         }
@@ -34,9 +32,9 @@ pub struct DeviceCapabilities {
 }
 
 impl DeviceCapabilities {
-    pub const fn vortex_simx_default() -> Self {
+    pub const fn vortex_rtl_default() -> Self {
         Self {
-            backend: DeviceBackend::VortexSimx,
+            backend: DeviceBackend::VortexRtl,
             xlen: 64,
             max_workgroup_threads: 16,
             preferred_subgroup_width: 4,
@@ -106,10 +104,10 @@ impl TargetSpec {
         }
     }
 
-    pub const fn vortex_simx_default() -> Self {
+    pub const fn vortex_rtl_default() -> Self {
         Self::from_device_capabilities(
-            "vortex_simx_default",
-            DeviceCapabilities::vortex_simx_default(),
+            "vortex_rtl_default",
+            DeviceCapabilities::vortex_rtl_default(),
         )
     }
 }
@@ -256,8 +254,8 @@ impl TargetConstraints {
         }
     }
 
-    pub const fn vortex_simx_default() -> Self {
-        Self::from_device_capabilities(DeviceCapabilities::vortex_simx_default())
+    pub const fn vortex_rtl_default() -> Self {
+        Self::from_device_capabilities(DeviceCapabilities::vortex_rtl_default())
     }
 }
 
@@ -462,8 +460,8 @@ mod tests {
     };
 
     #[test]
-    fn default_vortex_caps_match_current_simx_config() {
-        let caps = DeviceCapabilities::vortex_simx_default();
+    fn default_vortex_caps_match_current_rtl_config() {
+        let caps = DeviceCapabilities::vortex_rtl_default();
 
         assert_eq!(caps.xlen, 64);
         assert!(caps.supports_int8);
@@ -476,7 +474,7 @@ mod tests {
 
     #[test]
     fn exact_identity_and_kernel_requirements_are_separate_contracts() {
-        let requested = TargetSpec::vortex_simx_default();
+        let requested = TargetSpec::vortex_rtl_default();
         let mut realized = requested;
         realized.name = "larger_vortex";
         realized.max_workgroup_threads = 32;
@@ -501,7 +499,7 @@ mod tests {
                 .with(OperationCapability::AsyncCopy),
         );
         let compatibility =
-            RequirementCompatibility::evaluate(requirements, TargetSpec::vortex_simx_default());
+            RequirementCompatibility::evaluate(requirements, TargetSpec::vortex_rtl_default());
 
         assert!(!compatibility.is_compatible());
         assert!(compatibility.unsatisfied(KernelRequirement::TensorCoreMma));

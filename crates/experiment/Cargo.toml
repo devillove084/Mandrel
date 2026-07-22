@@ -9,7 +9,6 @@ rust-version.workspace = true
 [features]
 default = ["std"]
 std = [
-    "mandrel-artifact/std",
     "mandrel-device/std",
     "mandrel-hardware/std",
     "mandrel-profiler/std",
@@ -17,7 +16,6 @@ std = [
 ]
 
 [dependencies]
-mandrel-artifact = { workspace = true }
 mandrel-device = { workspace = true }
 mandrel-hardware = { workspace = true }
 mandrel-profiler = { workspace = true }
